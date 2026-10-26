@@ -28,6 +28,8 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: 화면 의존성
         working-directory: app
         run: npm ci

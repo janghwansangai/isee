@@ -274,6 +274,12 @@ mod tests {
         std::fs::write(&f, b"data").unwrap();
         let t = trash(&f).unwrap();
         assert!(!f.exists());
+        // GitHub의 윈도우 빌드 서버처럼 휴지통이 없는 환경이면 확인할 수 없다 (실제 PC에서 확인)
+        #[cfg(windows)]
+        if !trash::os_limited::list().unwrap().iter().any(|i| i.name == "버릴사진.jpg") {
+            eprintln!("이 환경에는 휴지통이 없어 되돌리기 확인을 건너뜀");
+            return;
+        }
         restore(&[t]).unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"data");
         std::fs::remove_dir_all(&d).unwrap();

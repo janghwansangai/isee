@@ -22,6 +22,8 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: 화면 빌드 (앱 빌드에 필요)
         working-directory: app
         run: |
