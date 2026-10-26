@@ -77,10 +77,17 @@ fn same_path_key(p: &Path) -> String {
 fn restore_impl(items: &[Trashed]) -> anyhow::Result<()> {
     let wanted: std::collections::HashSet<String> =
         items.iter().map(|i| same_path_key(Path::new(&i.original))).collect();
-    let mut found: Vec<trash::TrashItem> = trash::os_limited::list()?
-        .into_iter()
-        .filter(|t| wanted.contains(&same_path_key(&t.original_path())))
+    let all = trash::os_limited::list()?;
+    // 못 찾았을 때 원인을 알 수 있게: 이름이 같은 휴지통 항목의 경로
+    let names: Vec<String> = items.iter().filter_map(|i| Path::new(&i.original).file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+    let similar: Vec<String> = all
+        .iter()
+        .filter(|t| names.contains(&t.name.to_string_lossy().into_owned()))
+        .map(|t| same_path_key(&t.original_path()))
+        .take(3)
         .collect();
+    let total = all.len();
+    let mut found: Vec<trash::TrashItem> = all.into_iter().filter(|t| wanted.contains(&same_path_key(&t.original_path()))).collect();
     // 같은 경로가 여러 번 버려졌으면 가장 최근 것만 되돌린다.
     found.sort_by_key(|t| std::cmp::Reverse(t.time_deleted));
     let mut seen = std::collections::HashSet::new();
@@ -89,7 +96,11 @@ fn restore_impl(items: &[Trashed]) -> anyhow::Result<()> {
     trash::os_limited::restore_all(found)?;
     // 못 찾은 것이 있으면 조용히 넘어가지 않고 알린다 (사용자가 휴지통을 비운 경우 등)
     if n < wanted.len() {
-        bail!("휴지통에서 {}개를 찾지 못했습니다", wanted.len() - n);
+        bail!(
+            "휴지통에서 {}개를 찾지 못했습니다 (찾던 경로 {:?}, 휴지통 항목 {total}개, 이름이 같은 항목 {similar:?})",
+            wanted.len() - n,
+            wanted
+        );
     }
     Ok(())
 }
