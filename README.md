@@ -2,6 +2,22 @@
 
 윈도우·맥용 초고속 이미지 뷰어 & 사진 정리기. 계획은 [docs/PLAN.md](docs/PLAN.md), 속도 측정 결과는 [docs/BENCH.md](docs/BENCH.md).
 
+## 설치
+
+최신 설치 파일: **https://github.com/janghwansangai/isee-releases/releases/latest**
+
+- **맥** (애플 실리콘·인텔 모두): `iSee_…_universal.dmg`를 열고 iSee를 응용 프로그램 폴더로 끌어 놓습니다. 서명하지 않은 앱이라 처음 한 번은 Finder에서 iSee를 **우클릭 › 열기**로 엽니다.
+- **윈도우** 10·11: `iSee_…_x64-setup.exe`를 실행합니다 (관리자 권한 필요 없음). SmartScreen 경고가 뜨면 **추가 정보 › 실행**을 누릅니다.
+- 새 버전이 나오면 앱이 실행 15초 뒤(하루 한 번) 알려 주고, 누르면 받아서 다시 시작합니다. 메뉴 iSee(윈도우는 파일) › **업데이트 확인…**으로 직접 확인할 수도 있습니다. 업데이트 파일은 서명을 확인한 뒤에만 설치합니다.
+
+## 새 버전 내보내기 (개발자용)
+
+1. `app/src-tauri/tauri.conf.json`과 맨 위 `Cargo.toml`(workspace.package)의 `version`을 올리고 커밋합니다.
+2. 태그를 올립니다: `git tag v0.1.1 && git push origin main v0.1.1` → GitHub Actions가 맥·윈도우 설치 파일과 업데이트 파일을 만들어 비공개 저장소의 릴리스 초안에 올립니다.
+3. 맥에서 `scripts/publish.sh v0.1.1` → 공개 배포 저장소(isee-releases)에 올라가고, 사용자 앱이 업데이트를 받습니다.
+
+업데이트 서명 키는 이 맥의 `~/.tauri/isee-updater.key`(비밀번호는 같은 폴더)에만 있고, 저장소에는 GitHub Secrets로만 들어 있습니다. **키를 잃어버리면 기존 사용자에게 업데이트를 보낼 수 없으니** 따로 안전하게 보관하세요.
+
 ## 구조
 
 ```

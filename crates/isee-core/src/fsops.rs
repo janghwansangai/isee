@@ -65,19 +65,32 @@ fn restore_impl(items: &[Trashed]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 휴지통 기록과 비교할 경로: 상위 폴더를 실제 경로로 풀고(윈도우 짧은 이름 RUNNER~1 등) 대소문자를 무시한다
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+fn same_path_key(p: &Path) -> String {
+    let parent = p.parent().map(|d| std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf())).unwrap_or_default();
+    let key = parent.join(p.file_name().unwrap_or_default()).to_string_lossy().into_owned();
+    if cfg!(windows) { key.to_lowercase() } else { key }
+}
+
 #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 fn restore_impl(items: &[Trashed]) -> anyhow::Result<()> {
-    let wanted: std::collections::HashSet<PathBuf> =
-        items.iter().map(|i| PathBuf::from(&i.original)).collect();
+    let wanted: std::collections::HashSet<String> =
+        items.iter().map(|i| same_path_key(Path::new(&i.original))).collect();
     let mut found: Vec<trash::TrashItem> = trash::os_limited::list()?
         .into_iter()
-        .filter(|t| wanted.contains(&t.original_path()))
+        .filter(|t| wanted.contains(&same_path_key(&t.original_path())))
         .collect();
     // 같은 경로가 여러 번 버려졌으면 가장 최근 것만 되돌린다.
     found.sort_by_key(|t| std::cmp::Reverse(t.time_deleted));
     let mut seen = std::collections::HashSet::new();
-    found.retain(|t| seen.insert(t.original_path()));
+    found.retain(|t| seen.insert(same_path_key(&t.original_path())));
+    let n = found.len();
     trash::os_limited::restore_all(found)?;
+    // 못 찾은 것이 있으면 조용히 넘어가지 않고 알린다 (사용자가 휴지통을 비운 경우 등)
+    if n < wanted.len() {
+        bail!("휴지통에서 {}개를 찾지 못했습니다", wanted.len() - n);
+    }
     Ok(())
 }
 
