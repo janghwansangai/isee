@@ -1,0 +1,101 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "iSee",
+  "version": "0.1.0",
+  "identifier": "com.isee.viewer",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "iSee",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 760,
+        "minHeight": 480,
+        "backgroundColor": "#17181b",
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' isee: http://isee.localhost data: blob:; media-src 'self' isee: http://isee.localhost blob:; connect-src 'self' ipc: http://ipc.localhost isee: http://isee.localhost; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis"
+    ],
+    "category": "Photography",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "jpg",
+          "jpeg",
+          "jpe",
+          "jfif",
+          "png",
+          "gif",
+          "webp",
+          "bmp",
+          "tif",
+          "tiff",
+          "heic",
+          "heif",
+          "avif",
+          "psd",
+          "dng",
+          "cr2",
+          "cr3",
+          "nef",
+          "arw",
+          "raf",
+          "orf",
+          "rw2"
+        ],
+        "name": "Image",
+        "description": "이미지",
+        "role": "Viewer"
+      }
+    ],
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Korean",
+          "English"
+        ],
+        "displayLanguageSelector": false
+      }
+    },
+    "publisher": "iSee",
+    "copyright": "© 2026 iSee",
+    "shortDescription": "빠른 사진 뷰어 & 정리기"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM1MkYxN0UwMzk1MTFBMEQKUldRTkdsRTU0QmN2TmRiZU1KSC9FNWFHeWpIblNDTGU3RTNmblQybWpRcE1mY0lxb01kbWxRbkYK",
+      "endpoints": [
+        "https://github.com/janghwansangai/isee-releases/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

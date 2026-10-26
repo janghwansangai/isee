@@ -1,0 +1,34 @@
+# 올릴 때마다: 맥·윈도우에서 엔진 테스트와 앱 빌드 확인 (윈도우 전용 코드가 깨지지 않았는지)
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - name: 화면 빌드 (앱 빌드에 필요)
+        working-directory: app
+        run: |
+          npm ci
+          npm run check
+          npm run build
+      - name: 엔진 테스트
+        run: cargo test -p isee-core
+      - name: 앱 빌드 확인
+        run: cargo check -p isee-app

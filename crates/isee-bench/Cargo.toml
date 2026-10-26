@@ -1,0 +1,12 @@
+[package]
+name = "isee-bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kamadak-exif = "0.6.1"
+anyhow = "1.0.104"
+isee-core = { version = "0.1.0", path = "../isee-core" }
+
+[dev-dependencies]
+tract-onnx = "0.23.9"

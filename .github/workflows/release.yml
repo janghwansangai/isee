@@ -1,0 +1,49 @@
+# v로 시작하는 태그를 올리면: 맥(인텔+애플 실리콘)·윈도우 설치 파일과 자동 업데이트 파일을 만들어
+# 이 저장소의 릴리스 초안에 올린다. 공개 배포는 scripts/publish.sh로 isee-releases에 옮긴다.
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: swatinem/rust-cache@v2
+      - name: 화면 의존성
+        working-directory: app
+        run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: iSee ${{ github.ref_name }}
+          releaseBody: |
+            맥: dmg를 열어 iSee를 응용 프로그램 폴더로 끌어 놓으세요. 서명하지 않은 앱이라 처음에는 우클릭 › 열기로 여세요.
+            윈도우: setup.exe를 실행하세요. SmartScreen 경고가 뜨면 "추가 정보 › 실행"을 누르세요.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
