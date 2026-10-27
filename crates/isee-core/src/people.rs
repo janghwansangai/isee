@@ -431,7 +431,17 @@ pub fn group(
 ///      평균은 지문 합의 내적으로 바로 구한다: avg(A,B) = (ΣA·ΣB) / (|A||B|)
 ///   3) "빼기"한 얼굴 쌍은 같은 묶음에 넣지 않는다: 그런 묶음끼리의 비슷함을 -∞로 두면
 ///      합칠 때의 가중 평균에서도 -∞가 이어져 끝까지 합쳐지지 않는다
-fn average_linkage(mut faces: Vec<FaceRow>, apart: &[(i64, i64)]) -> (Vec<Vec<FaceRow>>, bool) {
+fn average_linkage(faces: Vec<FaceRow>, apart: &[(i64, i64)]) -> (Vec<Vec<FaceRow>>, bool) {
+    average_linkage_with(faces, apart, MAX_MERGE, MAX_SEEDS)
+}
+
+/// 한도(max_merge, max_seeds)를 받는 본체 (시험에서 작은 한도로 확인한다)
+fn average_linkage_with(
+    mut faces: Vec<FaceRow>,
+    apart: &[(i64, i64)],
+    max_merge: usize,
+    max_seeds: usize,
+) -> (Vec<Vec<FaceRow>>, bool) {
     faces.sort_by(|a, b| (b.px * b.q.max(1.0)).total_cmp(&(a.px * a.q.max(1.0))));
     let mut partners: HashMap<i64, Vec<i64>> = HashMap::new();
     for &(a, b) in apart {
@@ -459,7 +469,7 @@ fn average_linkage(mut faces: Vec<FaceRow>, apart: &[(i64, i64)]) -> (Vec<Vec<Fa
                 *c = mean(&m.iter().map(|x| x.emb.clone()).collect::<Vec<_>>());
                 i
             }
-            _ if seeds.len() >= MAX_SEEDS => {
+            _ if seeds.len() >= max_seeds => {
                 // 한도: 더 만들지 않고 혼자인 얼굴로 둔다 (작은 얼굴부터 오므로 덜 중요한 것)
                 fast = true;
                 lone.push(vec![f]);
@@ -474,13 +484,13 @@ fn average_linkage(mut faces: Vec<FaceRow>, apart: &[(i64, i64)]) -> (Vec<Vec<Fa
             seed_of.insert(id, at);
         }
     }
-    if seeds.len() > MAX_MERGE {
+    if seeds.len() > max_merge {
         // 큰 묶음만 합치기 단계로 (나머지는 그대로 둔다)
         fast = true;
         let mut order: Vec<usize> = (0..seeds.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(seeds[i].1.len()));
-        let keep: std::collections::HashSet<usize> = order.into_iter().take(MAX_MERGE).collect();
-        let mut kept = Vec::with_capacity(MAX_MERGE);
+        let keep: std::collections::HashSet<usize> = order.into_iter().take(max_merge).collect();
+        let mut kept = Vec::with_capacity(max_merge);
         let mut remap: HashMap<usize, usize> = HashMap::new();
         for (i, sd) in seeds.into_iter().enumerate() {
             if keep.contains(&i) {
@@ -798,19 +808,21 @@ mod tests {
 
     #[test]
     fn many_faces_use_the_fast_path_without_huge_memory() {
-        // 서로 다른 얼굴 MAX_MERGE+500개: 묶음이 한도를 넘으면 빠른 방식으로 끝난다
-        let n = MAX_MERGE + 500;
-        // 128차원 무작위 지문 (서로 거의 직각 → 모두 다른 사람)
+        // 서로 다른 얼굴 300개, 작은 한도(합치기 100·묶음 200): 한도를 넘으면 빠른 방식으로 끝나고 얼굴은 하나도 잃지 않는다
         let mut seed = 12345u64;
         let mut rnd = move || {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             ((seed >> 33) as f32 / (1u64 << 31) as f32) - 0.5
         };
+        // 128차원 무작위 지문 (서로 거의 직각 → 모두 다른 사람)
+        let n = 300;
         let faces: Vec<FaceRow> = (0..n).map(|i| face(i as i64, "/p.jpg", (0..128).map(|_| rnd()).collect(), 100.0)).collect();
-        let t = std::time::Instant::now();
-        let r = group(faces, &[], &[], 1, 1);
-        assert!(r.fast);
-        assert!(t.elapsed().as_secs() < 30);
+        let (clusters, fast) = average_linkage_with(faces.clone(), &[], 100, 200);
+        assert!(fast);
+        assert_eq!(clusters.iter().map(|c| c.len()).sum::<usize>(), n);
+        // 한도 안이면 보통 방식
+        let (_, fast) = average_linkage_with(faces, &[], 1000, 1000);
+        assert!(!fast);
     }
 
     #[test]
