@@ -77,6 +77,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         &[
             &check("view_grid", "썸네일로 보기", s.view_mode != "list", None)?,
             &check("view_list", "목록으로 보기", s.view_mode == "list", None)?,
+            &check("include_subfolders", "하위 폴더 사진도 보기", s.include_subfolders, None)?,
             &sep()?,
             &kinds,
             &sort,
@@ -94,6 +95,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
     )?;
     let open_folder = MenuItem::with_id(app, "open_folder", "폴더 열기…", true, mac_accel("CmdOrCtrl+O"))?;
     let new_folder = MenuItem::with_id(app, "new_folder", "새 폴더", true, mac_accel("CmdOrCtrl+Shift+N"))?;
+    let add_folders = MenuItem::with_id(app, "add_folders", "다른 폴더 함께 보기…", true, None::<&str>)?;
     let reveal = MenuItem::with_id(app, "reveal", REVEAL_LABEL, true, None::<&str>)?;
     let rename = MenuItem::with_id(app, "rename", "이름 바꾸기", true, None::<&str>)?;
     let trash = MenuItem::with_id(app, "trash", "휴지통으로 이동", true, None::<&str>)?;
@@ -104,7 +106,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
     let update = MenuItem::with_id(app, "check_update", "업데이트 확인…", true, None::<&str>)?;
     #[allow(unused_mut)]
     let mut file_items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
-        vec![&open_folder, &new_folder, &sep1, &reveal, &rename, &trash, &sep2];
+        vec![&open_folder, &add_folders, &new_folder, &sep1, &reveal, &rename, &trash, &sep2];
     #[cfg(not(target_os = "macos"))]
     file_items.push(&update);
     file_items.push(&close);
@@ -149,6 +151,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
             &MenuItem::with_id(app, "similar", "비슷한 사진 정리…", true, Some("CmdOrCtrl+Shift+S"))?,
             &MenuItem::with_id(app, "organize", "날짜·장소별 정리…", true, Some("CmdOrCtrl+Shift+D"))?,
             &MenuItem::with_id(app, "people", "인물…", true, Some("CmdOrCtrl+Shift+P"))?,
+            &MenuItem::with_id(app, "analyze_ahead", "분석 미리 해 두기 (비슷한 사진·인물)", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "quick_folders", "빠른 이동 폴더 설정…", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
@@ -396,6 +399,7 @@ pub fn sync_checks(checks: &Checks, s: &Settings) {
     set("sort_desc", s.sort_desc);
     set("view_grid", s.view_mode != "list");
     set("view_list", s.view_mode == "list");
+    set("include_subfolders", s.include_subfolders);
     set("show_info", s.show_info);
     set("show_hidden", s.show_hidden);
     set("show_hud", s.show_hud);
@@ -430,6 +434,7 @@ pub fn on_event(app: &AppHandle, ev: MenuEvent) {
             "culling" => s.culling = !s.culling,
             "view_grid" => s.view_mode = "grid".into(),
             "view_list" => s.view_mode = "list".into(),
+            "include_subfolders" => s.include_subfolders = !s.include_subfolders,
             "sort_desc" => s.sort_desc = !s.sort_desc,
             "show_info" => s.show_info = !s.show_info,
             "show_hidden" => s.show_hidden = !s.show_hidden,
@@ -445,7 +450,7 @@ pub fn on_event(app: &AppHandle, ev: MenuEvent) {
         s.save(&state.settings_path);
         sync_checks(&state.checks.lock(), &s);
         let _ = app.emit("settings-changed", &s);
-    } else if id.starts_with("kind_") || id.starts_with("sort_") || id.starts_with("show_") || id.starts_with("view_") || id == "culling" {
+    } else if id.starts_with("kind_") || id.starts_with("sort_") || id.starts_with("show_") || id.starts_with("view_") || id == "culling" || id == "include_subfolders" {
         // 체크 항목을 눌렀지만 값이 그대로면 macOS가 바꾼 체크 표시를 되돌린다.
         sync_checks(&state.checks.lock(), &state.settings.lock());
     } else {

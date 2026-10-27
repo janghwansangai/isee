@@ -53,27 +53,31 @@
     </div>
     <div class="row">
       <div class="what">
-        <b>비슷한 사진 분석</b>
+        <b>비슷한 사진 분석{#if bg.similar_label}<span class="label">{" · "}{bg.similar_label}</span>{/if}</b>
         <span class="state">
           {#if running(bg.similar)}{bg.paused ? "멈춤" : "실행 중"} · {bg.similar[0].toLocaleString()} / {bg.similar[1].toLocaleString()}
           {:else if bg.similar[1]}끝남 · {(bg.similar[1] - bg.similar_cloud).toLocaleString()}장 분석{#if bg.similar_cloud}<span class="cloud">{" · "}클라우드에만 있는 {bg.similar_cloud.toLocaleString()}장은 건너뜀</span>{/if}
           {:else}쉬는 중{/if}
         </span>
-        <span class="desc">"비슷한 사진" 화면을 열었을 때만 합니다.</span>
+        <span class="desc">"비슷한 사진"을 열거나 "분석 미리 해 두기"를 누르면 합니다. 화면을 닫아도 계속합니다.</span>
       </div>
       <button class="btn" disabled={busy || !running(bg.similar)} onclick={() => act("stop_similar")}>중단</button>
     </div>
     <div class="row">
       <div class="what">
-        <b>얼굴 분석</b>
+        <b>얼굴 분석{#if bg.faces_label}<span class="label">{" · "}{bg.faces_label}</span>{/if}</b>
         <span class="state">
           {#if running(bg.faces)}{bg.paused ? "멈춤" : "실행 중"} · {bg.faces[0].toLocaleString()} / {bg.faces[1].toLocaleString()}
+          {:else if bg.faces[1]}끝남 · {bg.faces[1].toLocaleString()}장 확인
           {:else}쉬는 중{/if}
         </span>
-        <span class="desc">"인물" 화면에서 분석을 시작했을 때만 합니다.</span>
+        <span class="desc">"인물" 화면에서 분석을 시작하거나 "분석 미리 해 두기"를 누르면 합니다. 화면을 닫아도 계속합니다.</span>
       </div>
       <button class="btn" disabled={busy || !running(bg.faces)} onclick={() => act("stop_faces")}>중단</button>
     </div>
+    <button class="btn ahead" disabled={!store.path} onclick={() => store.analyzeAhead()} title="지금 보는 범위를 화면 없이 뒤에서 분석해 둡니다. 다 되면 알려 드립니다.">
+      지금 보는 사진 분석 미리 해 두기
+    </button>
   {/if}
 </div>
 
@@ -130,6 +134,14 @@
   }
   .cloud {
     color: #9fc4ff;
+  }
+  .label {
+    font-weight: 400;
+    color: var(--text-dim);
+  }
+  .ahead {
+    margin-top: 8px;
+    width: 100%;
   }
   .desc {
     font-size: 11px;

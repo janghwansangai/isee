@@ -40,6 +40,8 @@ pub struct Settings {
     pub keep_running: bool,
     /// 보기 방식: "grid"(썸네일) | "list"(목록: 이름·날짜·크기)
     pub view_mode: String,
+    /// 하위 폴더 사진도 함께 보기 (사진이 많아질 수 있어 기본은 꺼짐)
+    pub include_subfolders: bool,
     /// 썸네일 칸 크기 (CSS px)
     pub thumb_size: u32,
     /// 숫자키 1~9 빠른 이동 폴더
@@ -75,6 +77,7 @@ impl Default for Settings {
             show_hud: false,
             keep_running: true,
             view_mode: "grid".into(),
+            include_subfolders: false,
             thumb_size: 168,
             quick_folders: vec![None; 9],
             last_folder: None,

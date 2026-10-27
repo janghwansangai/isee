@@ -52,6 +52,9 @@ pub struct AppState {
     viewer_active: AtomicBool,
     /// 사용자가 "백그라운드 작업 모두 멈춤"을 누름
     user_paused: AtomicBool,
+    /// 지금(또는 마지막으로) 분석하는 범위 이름 (백그라운드 작업 창에 보여 준다)
+    similar_label: Mutex<String>,
+    faces_label: Mutex<String>,
     /// 얼굴별 분류 (8단계, 선택 모듈)
     pub faces: FaceService,
     models_dir: PathBuf,
@@ -131,7 +134,69 @@ struct Listing {
     marks: std::collections::HashMap<String, Mark>,
     /// 보기 필터와 무관한 폴더 전체 사진 수 (빠른 고르기 개수 표시용)
     image_total: usize,
+    /// 하위 폴더·여러 폴더를 함께 볼 때 읽은 폴더 수 (폴더 하나면 1)
+    dirs: usize,
+    /// 파일이 너무 많아 한도까지만 모았다
+    truncated: bool,
     ms: f64,
+}
+
+/// 지금 보는 범위: 폴더 하나(기본), 그 하위 폴더까지, 다른 폴더를 더해 함께.
+/// 하위 폴더·여러 폴더는 사진이 많아질 수 있어 사용자가 켤 때만 쓴다.
+#[derive(Clone, Debug, Default)]
+struct Scope {
+    path: String,
+    extra: Vec<String>,
+    recursive: bool,
+}
+
+impl Scope {
+    fn new(path: String, extra: Option<Vec<String>>, recursive: Option<bool>) -> Self {
+        let mut extra = extra.unwrap_or_default();
+        extra.retain(|p| p != &path);
+        extra.dedup();
+        Self { path, extra, recursive: recursive.unwrap_or(false) }
+    }
+    /// 폴더 하나만 (예전과 같은 빠른 길)
+    fn single(&self) -> bool {
+        self.extra.is_empty() && !self.recursive
+    }
+    fn roots(&self) -> Vec<std::path::PathBuf> {
+        std::iter::once(&self.path).chain(&self.extra).map(std::path::PathBuf::from).collect()
+    }
+}
+
+/// 범위 안의 항목: (항목, 읽은 폴더 수, 한도에 걸림). 여러 폴더면 폴더 항목은 빼고 파일만.
+fn scope_entries(sc: &Scope, hidden: bool) -> CmdResult<(Vec<Entry>, usize, bool)> {
+    if sc.single() {
+        return Ok((listing::list_dir(Path::new(&sc.path), hidden).map_err(err)?, 1, false));
+    }
+    let t = listing::list_tree(&sc.roots(), sc.recursive, hidden, listing::TreeLimits::default());
+    if t.dirs == 0 {
+        return Err(format!("폴더를 읽을 수 없습니다: {}", sc.path));
+    }
+    Ok((t.files, t.dirs, t.truncated))
+}
+
+/// 범위를 사람이 읽는 이름으로: "1026세계박람회 (하위 폴더 포함) 외 2곳"
+fn scope_label(sc: &Scope) -> String {
+    let mut s = Path::new(&sc.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| sc.path.clone());
+    if sc.recursive {
+        s.push_str(" (하위 폴더 포함)");
+    }
+    if !sc.extra.is_empty() {
+        s.push_str(&format!(" 외 {}곳", sc.extra.len()));
+    }
+    s
+}
+
+/// 범위 안의 남김·버림·별점 (폴더마다 하위 폴더 포함으로 읽는다)
+fn scope_marks(state: &AppState, sc: &Scope) -> std::collections::HashMap<String, Mark> {
+    let mut m = std::collections::HashMap::new();
+    for root in sc.roots() {
+        m.extend(state.marks.in_dir(&root));
+    }
+    m
 }
 
 fn ext_of(name: &str) -> String {
@@ -143,12 +208,18 @@ fn ext_of(name: &str) -> String {
 
 /// 폴더를 열고(설정의 파일 종류·정렬 적용), 그 순서대로 썸네일을 미리 만들기 시작한다.
 #[tauri::command]
-async fn open_folder(state: State<'_, AppState>, path: String) -> CmdResult<Listing> {
+async fn open_folder(
+    state: State<'_, AppState>,
+    path: String,
+    extra: Option<Vec<String>>,
+    recursive: Option<bool>,
+) -> CmdResult<Listing> {
     let t0 = Instant::now();
     let s = state.settings.lock().clone();
+    let sc = Scope::new(path.clone(), extra, recursive);
     let dir = Path::new(&path);
-    let mut entries = listing::list_dir(dir, s.show_hidden).map_err(err)?;
-    let mut marks = state.marks.in_dir(dir);
+    let (mut entries, dirs, truncated) = scope_entries(&sc, s.show_hidden)?;
+    let mut marks = scope_marks(&state, &sc);
     // 밖에서 지우거나 옮긴 파일의 표시는 빼고 넘긴다
     let images: std::collections::HashSet<&str> =
         entries.iter().filter(|e| e.kind == Kind::Image).map(|e| e.path.as_str()).collect();
@@ -180,7 +251,8 @@ async fn open_folder(state: State<'_, AppState>, path: String) -> CmdResult<List
     });
     // list_dir가 이미 "폴더 먼저 + 이름 자연 정렬"이므로 그 순서를 같은 값끼리의 기준으로 쓴다.
     let by = s.sort_by.as_str();
-    if by != "name" || s.sort_desc {
+    // 여러 폴더를 모았으면 폴더마다의 순서가 이어 붙어 있으므로 항상 다시 정렬한다
+    if by != "name" || s.sort_desc || !sc.single() {
         entries.sort_by(|a, b| {
             let dirs = (a.kind != Kind::Dir).cmp(&(b.kind != Kind::Dir));
             let key = match by {
@@ -224,6 +296,8 @@ async fn open_folder(state: State<'_, AppState>, path: String) -> CmdResult<List
         entries,
         marks,
         image_total,
+        dirs,
+        truncated,
         ms: t0.elapsed().as_secs_f64() * 1000.0,
     })
 }
@@ -469,10 +543,10 @@ async fn set_marks(
 
 // ───────────────────────── 비슷한 사진 (4단계) ─────────────────────────
 
-/// 폴더 안 사진 전부 (보기 필터와 무관, 숨김 파일 설정만 따른다)
-fn folder_images(state: &AppState, path: &str) -> CmdResult<Vec<Req>> {
+/// 범위 안 사진 전부 (보기 필터와 무관, 숨김 파일 설정만 따른다)
+fn scope_images(state: &AppState, sc: &Scope) -> CmdResult<Vec<Req>> {
     let hidden = state.settings.lock().show_hidden;
-    let entries = listing::list_dir(Path::new(path), hidden).map_err(err)?;
+    let (entries, _, _) = scope_entries(sc, hidden)?;
     Ok(entries
         .into_iter()
         .filter(|e| e.kind == Kind::Image)
@@ -484,17 +558,60 @@ fn folder_images(state: &AppState, path: &str) -> CmdResult<Vec<Req>> {
 /// 폴더 사진의 특징값 계산을 백그라운드로 시작한다 (계산해 둔 것은 건너뜀).
 /// (끝난 수, 전체)를 돌려주고, 이후 진행은 "analysis-progress" 이벤트로 알린다.
 #[tauri::command]
-async fn analyze_folder(app: AppHandle, path: String) -> CmdResult<(usize, usize)> {
+async fn analyze_folder(app: AppHandle, path: String, extra: Option<Vec<String>>, recursive: Option<bool>) -> CmdResult<(usize, usize)> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let reqs = folder_images(&state, &path)?;
+        let sc = Scope::new(path, extra, recursive);
+        let reqs = scope_images(&state, &sc)?;
+        *state.similar_label.lock() = scope_label(&sc);
         Ok(state.analysis.analyze(reqs))
     })
     .await
     .map_err(err)?
 }
 
-/// 비슷한 사진 화면을 닫으면 남은 분석을 멈춘다
+/// 분석에 걸릴 시간 어림 (시작하지 않음). 사진이 많으면 시작 전에 사용자에게 묻는다.
+#[derive(Serialize)]
+struct AnalysisEstimate {
+    total: usize,
+    /// 비슷한 사진: 새로 분석할 수, 클라우드라 넘길 수, 어림 시간
+    similar_todo: usize,
+    cloud: usize,
+    similar_ms: f64,
+    /// 얼굴(설치했을 때만): 새로 분석할 수, 어림 시간
+    faces_todo: usize,
+    faces_ms: f64,
+}
+
+#[tauri::command]
+async fn analysis_estimate(app: AppHandle, path: String, extra: Option<Vec<String>>, recursive: Option<bool>) -> CmdResult<AnalysisEstimate> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let reqs = scope_images(&state, &Scope::new(path, extra, recursive))?;
+        let (similar_todo, cloud) = state.analysis.pending(&reqs);
+        let faces_todo = if isee_core::faces::installed(&state.models_dir) {
+            reqs.iter().filter(|r| !state.faces.db().analyzed(r) && !listing::is_online_only(Path::new(&r.path))).count()
+        } else {
+            0
+        };
+        // 한 장 시간(12MP 기준, 측정값에 여유) ÷ 일꾼 수 (분석은 코어 절반, 얼굴은 4분의 1)
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let sim_workers = (cores / 2).clamp(1, 6) as f64;
+        let face_workers = (cores / 4).clamp(1, 3) as f64;
+        Ok(AnalysisEstimate {
+            total: reqs.len(),
+            similar_todo,
+            cloud,
+            similar_ms: similar_todo as f64 * 30.0 / sim_workers,
+            faces_todo,
+            faces_ms: faces_todo as f64 * 150.0 / face_workers,
+        })
+    })
+    .await
+    .map_err(err)?
+}
+
+/// 비슷한 사진 분석 중단 (백그라운드 작업 창의 "중단")
 #[tauri::command]
 fn stop_analysis(state: State<'_, AppState>) {
     state.analysis.analyze(Vec::new());
@@ -502,7 +619,13 @@ fn stop_analysis(state: State<'_, AppState>) {
 
 /// 분석이 끝난 사진으로 묶음·추천·중복·흐림 보고서를 만든다. 고른 기준은 설정에 기억한다.
 #[tauri::command]
-async fn similar_report(app: AppHandle, path: String, options: similar::Options) -> CmdResult<similar::Report> {
+async fn similar_report(
+    app: AppHandle,
+    path: String,
+    options: similar::Options,
+    extra: Option<Vec<String>>,
+    recursive: Option<bool>,
+) -> CmdResult<similar::Report> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         {
@@ -512,10 +635,11 @@ async fn similar_report(app: AppHandle, path: String, options: similar::Options)
                 s.save(&state.settings_path);
             }
         }
-        let reqs = folder_images(&state, &path)?;
+        let sc = Scope::new(path, extra, recursive);
+        let reqs = scope_images(&state, &sc)?;
         let total = reqs.len();
         let feats = state.analysis.features(&reqs);
-        let marks = state.marks.in_dir(Path::new(&path));
+        let marks = scope_marks(&state, &sc);
         let mut cloud = 0;
         let items: Vec<similar::Item> = reqs
             .into_iter()
@@ -752,31 +876,20 @@ async fn faces_install(app: AppHandle) -> CmdResult<()> {
 }
 
 /// 폴더(하위 폴더 포함 가능)의 사진
-fn photos_in(state: &AppState, folder: &str, recursive: bool) -> Vec<Req> {
-    let mut files = Vec::new();
-    media_in(Path::new(folder), state.settings.lock().show_hidden, recursive, &mut files);
-    files
-        .into_iter()
-        .filter(|p| isee_core::formats::kind_of(Path::new(p)) == Kind::Image)
-        .enumerate()
-        .filter_map(|(i, p)| {
-            let m = std::fs::metadata(&p).ok()?;
-            let mtime = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
-            Some(Req { path: p, size: m.len(), mtime, index: i as i64 })
-        })
-        .collect()
-}
 
 /// 얼굴 찾기를 백그라운드로 시작 (분석한 사진은 건너뜀). 진행은 "faces-progress".
 #[tauri::command]
-async fn faces_analyze(app: AppHandle, folder: String, recursive: bool) -> CmdResult<(usize, usize)> {
+async fn faces_analyze(app: AppHandle, folder: String, recursive: bool, extra: Option<Vec<String>>) -> CmdResult<(usize, usize)> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         if !isee_core::faces::installed(&state.models_dir) {
             return Err("얼굴 분류 기능이 설치되지 않았습니다".to_string());
         }
         state.faces.load_models(&state.models_dir).map_err(err)?;
-        Ok(state.faces.analyze(photos_in(&state, &folder, recursive)))
+        let sc = Scope::new(folder, extra, Some(recursive));
+        let reqs = scope_images(&state, &sc)?;
+        *state.faces_label.lock() = scope_label(&sc);
+        Ok(state.faces.analyze(reqs))
     })
     .await
     .map_err(err)?
@@ -789,10 +902,10 @@ fn faces_stop(state: State<'_, AppState>) {
 
 /// 사람별 묶음 (이 폴더의 얼굴 + 이름 붙은 사람 전체)
 #[tauri::command]
-async fn faces_report(app: AppHandle, folder: String, recursive: bool) -> CmdResult<people::Report> {
+async fn faces_report(app: AppHandle, folder: String, recursive: bool, extra: Option<Vec<String>>) -> CmdResult<people::Report> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let reqs = photos_in(&state, &folder, recursive);
+        let reqs = scope_images(&state, &Scope::new(folder, extra, Some(recursive))).unwrap_or_default();
         let total = reqs.len();
         let db = state.faces.db();
         let analyzed = reqs.iter().filter(|r| db.analyzed(r)).count();
@@ -847,11 +960,19 @@ fn faces_clear(state: State<'_, AppState>) -> CmdResult<()> {
 
 /// 인물별 폴더로: "copy"(인물마다 복사, 여러 사람이 나온 사진은 사람 수만큼) 또는 "main"(주인공 기준 이동, 비슷한 크기로 여럿이면 "단체 사진")
 #[tauri::command]
-async fn faces_organize(app: AppHandle, folder: String, recursive: bool, root: String, mode: String, people_ids: Vec<i64>) -> CmdResult<OrganizeReport> {
+async fn faces_organize(
+    app: AppHandle,
+    folder: String,
+    recursive: bool,
+    root: String,
+    mode: String,
+    people_ids: Vec<i64>,
+    extra: Option<Vec<String>>,
+) -> CmdResult<OrganizeReport> {
     tauri::async_runtime::spawn_blocking(move || {
         let t0 = Instant::now();
         let state = app.state::<AppState>();
-        let reqs = photos_in(&state, &folder, recursive);
+        let reqs = scope_images(&state, &Scope::new(folder, extra, Some(recursive))).unwrap_or_default();
         let db = state.faces.db();
         let paths: Vec<String> = reqs.into_iter().map(|r| r.path).collect();
         let report = people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), 0, 0);
@@ -1202,6 +1323,9 @@ struct BgStatus {
     similar: (usize, usize),
     /// 그중 클라우드에만 있어 분석하지 않고 넘긴 수
     similar_cloud: usize,
+    /// 분석하는(했던) 범위 이름
+    similar_label: String,
+    faces_label: String,
     /// 얼굴 분석 (끝난 수, 전체)
     faces: (usize, usize),
 }
@@ -1213,6 +1337,8 @@ fn bg_status(state: &AppState) -> BgStatus {
         thumbs: state.thumbs.background_pending(),
         similar: state.analysis.progress(),
         similar_cloud: state.analysis.skipped(),
+        similar_label: state.similar_label.lock().clone(),
+        faces_label: state.faces_label.lock().clone(),
         faces: state.faces.progress(),
     }
 }
@@ -1389,6 +1515,8 @@ pub fn run() {
                 analysis_paused,
                 viewer_active: AtomicBool::new(false),
                 user_paused: AtomicBool::new(false),
+                similar_label: Mutex::new(String::new()),
+                faces_label: Mutex::new(String::new()),
                 organize_items: Mutex::new(Vec::new()),
                 faces,
                 models_dir: data_dir.join("models"),
@@ -1458,6 +1586,7 @@ pub fn run() {
             faces_name,
             faces_reject,
             faces_apart,
+            analysis_estimate,
             faces_delete_person,
             faces_clear,
             faces_organize,

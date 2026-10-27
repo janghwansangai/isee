@@ -14,6 +14,9 @@ pub struct Entry {
     /// 클라우드에만 있고 아직 내려받지 않은 파일 (내용을 읽으면 다운로드가 시작된다)
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cloud: bool,
+    /// 여러 폴더를 함께 볼 때 이 파일이 있는 폴더 (보여 주는 이름. 예: "1026세계박람회/오전")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 /// 온라인 전용 파일인가 (맥: File Provider의 dataless 표시, 윈도우: 클라우드 자리 표시 파일 속성)
@@ -87,6 +90,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
             size: if meta.is_dir() { 0 } else { meta.len() },
             mtime: mtime_ms(&meta),
             cloud: !meta.is_dir() && online_only(&meta),
+            folder: None,
         });
     }
     out.sort_by(|a, b| {
@@ -95,6 +99,77 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
             .then_with(|| natord::compare_ignore_case(&a.name, &b.name))
     });
     Ok(out)
+}
+
+/// 여러 폴더(그리고 하위 폴더)의 파일을 한 목록으로 모을 때의 한도.
+/// 너무 큰 폴더(예: 홈 폴더 전체)를 고르면 끝없이 읽거나 메모리가 모자라지 않게 멈춘다.
+#[derive(Clone, Copy, Debug)]
+pub struct TreeLimits {
+    /// 모을 파일 수
+    pub max_files: usize,
+    /// 읽어 볼 항목 수 (폴더·사진 아닌 파일 포함)
+    pub max_scanned: usize,
+    /// 하위 폴더 깊이
+    pub max_depth: usize,
+}
+
+impl Default for TreeLimits {
+    fn default() -> Self {
+        Self { max_files: 50_000, max_scanned: 400_000, max_depth: 16 }
+    }
+}
+
+/// 모은 결과
+#[derive(Debug, Default)]
+pub struct Tree {
+    /// 파일만 (폴더는 넣지 않는다). folder에 보여 줄 폴더 이름이 들어 있다.
+    pub files: Vec<Entry>,
+    /// 읽은 폴더 수
+    pub dirs: usize,
+    /// 한도에 걸려 일부만 모았다
+    pub truncated: bool,
+}
+
+/// roots의 파일을 모은다. recursive면 하위 폴더까지 (패키지·숨김 폴더는 들어가지 않음).
+/// 폴더 이름은 roots가 하나면 그 안의 상대 경로, 여럿이면 각 root 이름부터 붙인다.
+pub fn list_tree(roots: &[PathBuf], recursive: bool, show_hidden: bool, lim: TreeLimits) -> Tree {
+    let mut out = Tree::default();
+    let mut scanned = 0usize;
+    let many = roots.len() > 1;
+    for root in roots {
+        let base = if many { root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { String::new() };
+        // (폴더, 보여 줄 이름, 깊이)
+        let mut stack = vec![(root.clone(), base, 0usize)];
+        while let Some((dir, label, depth)) = stack.pop() {
+            let Ok(entries) = list_dir(&dir, show_hidden) else { continue };
+            out.dirs += 1;
+            scanned += entries.len();
+            let mut subdirs = Vec::new();
+            for mut e in entries {
+                if e.kind == Kind::Dir {
+                    if recursive && depth < lim.max_depth {
+                        let name = e.name.clone();
+                        let sub = if label.is_empty() { name } else { format!("{label}/{name}") };
+                        subdirs.push((PathBuf::from(&e.path), sub, depth + 1));
+                    }
+                    continue;
+                }
+                if out.files.len() >= lim.max_files {
+                    out.truncated = true;
+                    return out;
+                }
+                e.folder = (!label.is_empty()).then(|| label.clone());
+                out.files.push(e);
+            }
+            if scanned >= lim.max_scanned {
+                out.truncated = true;
+                return out;
+            }
+            // 이름 순서대로 들어가도록 거꾸로 쌓는다
+            stack.extend(subdirs.into_iter().rev());
+        }
+    }
+    out
 }
 
 /// 맥의 .app, .photoslibrary 같은 패키지는 폴더처럼 들어가지 않는다.
@@ -294,4 +369,50 @@ fn cloud_folders(home: Option<&Path>) -> Vec<Place> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_collects_subfolders_and_stops_at_the_limit() {
+        let d = std::env::temp_dir().join(format!("isee-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for sub in ["a", "a/b", "c", ".hidden"] {
+            std::fs::create_dir_all(d.join(sub)).unwrap();
+        }
+        for f in ["1.jpg", "a/2.jpg", "a/b/3.jpg", "c/4.jpg", ".hidden/5.jpg"] {
+            std::fs::write(d.join(f), b"x").unwrap();
+        }
+        let other = std::env::temp_dir().join(format!("isee-tree2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("9.jpg"), b"x").unwrap();
+
+        // 하위 폴더 포함: 숨김 폴더는 빼고, 폴더 이름이 붙는다
+        let t = list_tree(&[d.clone()], true, false, TreeLimits::default());
+        let mut got: Vec<(Option<String>, String)> = t.files.iter().map(|e| (e.folder.clone(), e.name.clone())).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (None, "1.jpg".into()),
+                (Some("a".into()), "2.jpg".into()),
+                (Some("a/b".into()), "3.jpg".into()),
+                (Some("c".into()), "4.jpg".into()),
+            ]
+        );
+        assert!(!t.truncated);
+        // 다른 폴더와 함께 (하위 폴더 없이): 각 폴더 이름이 붙는다
+        let t = list_tree(&[d.clone(), other.clone()], false, false, TreeLimits::default());
+        assert_eq!(t.files.len(), 2);
+        assert!(t.files.iter().all(|e| e.folder.is_some()));
+        // 한도: 파일 2개까지만
+        let t = list_tree(&[d.clone()], true, false, TreeLimits { max_files: 2, ..Default::default() });
+        assert_eq!(t.files.len(), 2);
+        assert!(t.truncated);
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(&other).unwrap();
+    }
 }

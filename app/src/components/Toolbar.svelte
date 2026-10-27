@@ -21,6 +21,13 @@
     return out.length > 6 ? [out[0], { name: "…", path: "" }, ...out.slice(-4)] : out;
   });
 
+  let scopeText = $derived.by(() => {
+    const parts: string[] = [];
+    if (store.settings.include_subfolders) parts.push("하위 폴더 포함");
+    if (store.extra.length) parts.push(`+${store.extra.length}곳`);
+    return parts.length ? parts.join(" · ") : "이 폴더만";
+  });
+
   const sorts = [
     { v: "name", t: "이름" },
     { v: "date", t: "날짜" },
@@ -85,6 +92,16 @@
       {/if}
     {/each}
   </div>
+  {#if store.path}
+    <button
+      class="pill scope"
+      class:on={!store.singleFolder}
+      onclick={() => (store.scopeOpen = !store.scopeOpen)}
+      title="보는 범위: 하위 폴더 사진도 보기, 다른 폴더 함께 보기"
+    >
+      {scopeText} ▾
+    </button>
+  {/if}
 
   <div class="right">
     {#if selImages >= 2}
@@ -279,6 +296,10 @@
   /* 목록 보기에서는 썸네일 크기가 의미 없으므로 자리만 지킨다 (툴바가 흔들리지 않게) */
   .size.hidden {
     visibility: hidden;
+  }
+  .scope {
+    flex: none;
+    white-space: nowrap;
   }
   .seg {
     display: flex;

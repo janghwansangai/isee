@@ -385,6 +385,22 @@ impl AnalysisService {
         (st.done, st.total)
     }
 
+    /// 시작하지 않고 셈만: (새로 분석할 수, 클라우드에만 있어 넘길 수)
+    pub fn pending(&self, reqs: &[Req]) -> (usize, usize) {
+        let (mut todo, mut cloud) = (0, 0);
+        for r in reqs {
+            if self.inner.store.get(r).is_some() {
+                continue;
+            }
+            if crate::listing::is_online_only(Path::new(&r.path)) {
+                cloud += 1;
+            } else {
+                todo += 1;
+            }
+        }
+        (todo, cloud)
+    }
+
     /// 지금 분석 중인 폴더에서 클라우드에만 있어 넘긴 수
     pub fn skipped(&self) -> usize {
         self.inner.st.lock().skipped

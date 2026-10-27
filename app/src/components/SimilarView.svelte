@@ -9,6 +9,7 @@
     baseName,
     fmtSize,
     photoEntry,
+    scopeLabel,
     thumbUrl,
     type Photo,
     type SimilarMember,
@@ -22,7 +23,8 @@
   type Tab = "groups" | "duplicates" | "blurry" | "dark" | "bright";
 
   // 화면을 연 폴더 (그사이 다른 폴더로 가도 이 폴더 기준)
-  const folder = store.path;
+  // 연 범위 (지금 폴더, 하위 폴더·함께 보는 폴더 포함)
+  const scope = store.scope();
   let report = $state.raw<SimilarReport | null>(null);
   let progress = $state<[number, number]>([0, 0]);
   let tab = $state<Tab>("groups");
@@ -53,7 +55,7 @@
   let lastAt = 0;
   async function refresh() {
     try {
-      report = await api.similarReport(folder, $state.snapshot(opts));
+      report = await api.similarReport(scope, $state.snapshot(opts));
       lastAt = performance.now();
     } catch (e) {
       store.showToast(`비슷한 사진을 찾지 못했습니다: ${e}`, { error: true });
@@ -72,19 +74,23 @@
       // 분석 중에는 1.5초마다 다시 묶어 보여 주고, 끝나면 바로
       if (e.payload[0] >= e.payload[1] || performance.now() - lastAt > 1500) refreshSoon(0);
     }).then((u) => (alive ? (unlisten = u) : u()));
-    api
-      .analyzeFolder(folder)
-      .then((p) => {
-        // 분석할 것이 적으면(클라우드 사진은 건너뜀) 끝났다는 알림이 이 응답보다 먼저 온다: 더 나아간 쪽을 쓴다
-        if (!(progress[1] === p[1] && progress[0] > p[0])) progress = p;
+    (async () => {
+      // 사진이 아주 많으면 걸릴 시간을 알리고 묻는다 (취소하면 분석한 것만으로 보여 준다)
+      if (!(await store.confirmAnalysis(scope))) {
         refresh();
-      })
-      .catch((e) => store.showToast(`분석을 시작하지 못했습니다: ${e}`, { error: true }));
+        return;
+      }
+      if (!alive) return;
+      const p = await api.analyzeFolder(scope);
+      // 분석할 것이 적으면(클라우드 사진은 건너뜀) 끝났다는 알림이 이 응답보다 먼저 온다: 더 나아간 쪽을 쓴다
+      if (!(progress[1] === p[1] && progress[0] > p[0])) progress = p;
+      refresh();
+    })().catch((e) => store.showToast(`분석을 시작하지 못했습니다: ${e}`, { error: true }));
     return () => {
       alive = false;
       unlisten?.();
       clearTimeout(timer);
-      api.stopAnalysis();
+      // 화면을 닫아도 분석은 뒤에서 계속한다 (백그라운드 작업 창에서 보고 멈출 수 있음)
     };
   });
 
@@ -201,7 +207,7 @@
 <div class="similar" role="dialog" aria-label="비슷한 사진 정리" tabindex="-1" oncontextmenu={(e) => e.preventDefault()}>
   <div class="topbar">
     <span class="title">비슷한 사진 정리</span>
-    <span class="dim">{baseName(folder)}</span>
+    <span class="dim">{scopeLabel(scope)}</span>
     {#if analyzing}
       <span class="progress" title="뷰어·비교 화면을 여는 동안에는 잠시 멈춥니다">
         분석 {progress[0].toLocaleString()} / {progress[1].toLocaleString()}

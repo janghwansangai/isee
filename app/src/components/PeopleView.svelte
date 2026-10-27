@@ -5,14 +5,17 @@
   import { listen } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { store } from "../lib/store.svelte";
-  import { api, baseName, faceUrl, fmtSize, isMac, type PeopleReport, type PersonGroup } from "../lib/api";
+  import { api, baseName, faceUrl, fmtSize, isMac, type PeopleReport, type PersonGroup, scopeLabel } from "../lib/api";
   import Icon from "./Icon.svelte";
 
-  const folder = store.people!;
+  // 연 범위 (지금 폴더, 함께 보는 다른 폴더). 하위 폴더 포함은 이 화면에서도 바꿀 수 있다.
+  const base = store.people!;
+  const folder = base.path;
   let installed = $state<boolean | null>(null);
   let download = $state(0);
   let installing = $state<[number, number] | null>(null);
-  let recursive = $state(false);
+  let recursive = $state(base.recursive);
+  let scope = $derived({ ...base, recursive });
   let progress = $state<[number, number]>([0, 0]);
   let report = $state.raw<PeopleReport | null>(null);
   /** 고른 묶음 (사람 번호 또는 "u:대표 얼굴") */
@@ -47,7 +50,7 @@
   let lastAt = 0;
   async function refresh() {
     try {
-      const r = await api.facesReport(folder, recursive);
+      const r = await api.facesReport(scope);
       report = r;
       lastAt = performance.now();
       if (!selKey || !r.groups.some((g) => keyOf(g) === selKey)) selKey = r.groups[0] ? keyOf(r.groups[0]) : null;
@@ -75,7 +78,7 @@
 
   async function start() {
     try {
-      progress = await api.facesAnalyze(folder, recursive);
+      progress = await api.facesAnalyze(scope);
       await refresh();
     } catch (e) {
       store.showToast(`${e}`, { error: true });
@@ -237,7 +240,7 @@
     if (!ok) return;
     working = true;
     try {
-      const r = await api.facesOrganize(folder, recursive, folder, mode, []);
+      const r = await api.facesOrganize(scope, folder, mode, []);
       let m = `${r.files}개를 ${mode === "copy" ? "복사" : "옮겼"}했습니다 · 새 폴더 ${r.folders}개`;
       if (r.failed.length) m += ` · ${r.failed.length}개 실패`;
       store.showToast(m, { undo: r.files > 0, error: r.failed.length > 0 });
@@ -281,7 +284,7 @@
 <div class="people" role="dialog" aria-label="인물" tabindex="-1" oncontextmenu={(e) => e.preventDefault()}>
   <div class="topbar">
     <span class="title">인물</span>
-    <span class="dim">{baseName(folder)}</span>
+    <span class="dim">{scopeLabel({ ...base, recursive: false })}</span>
     {#if installed}
       <label class="check"><input type="checkbox" bind:checked={recursive} /> 하위 폴더 포함</label>
       {#if analyzing}
@@ -357,6 +360,9 @@
         {/each}
         {#if report && (report.singles || report.small)}
           <p class="note">한 번만 나온 얼굴 {report.singles}개, 너무 작은 얼굴 {report.small}개는 묶지 않았습니다.</p>
+        {/if}
+        {#if report?.fast}
+          <p class="note">얼굴이 아주 많아 빠른 방식으로 묶었습니다 (메모리를 아끼려고 큰 묶음끼리만 합침). 폴더를 나누어 보면 더 정확합니다.</p>
         {/if}
       </aside>
 

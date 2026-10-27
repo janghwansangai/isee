@@ -37,6 +37,8 @@
   let scrollTop = $state(0);
 
   let list = $derived(store.settings.view_mode === "list");
+  // 하위 폴더·다른 폴더를 함께 보면 목록에 폴더 칸을 보여 준다
+  let showFolder = $derived(!store.singleFolder);
   let size = $derived(store.settings.thumb_size);
   $effect(() => {
     cols = list ? 1 : Math.max(1, Math.floor((width - PAD * 2 + GAP) / (size + GAP)));
@@ -199,6 +201,7 @@
       <span class="lcheck"></span>
       <span class="lthumb"></span>
       <button class="lname" class:on={by === "name"} onclick={() => sortBy("name")}>이름 {by === "name" ? arrow : ""}</button>
+      {#if showFolder}<span class="lfolder">폴더</span>{/if}
       <button class="ldate" class:on={by === "date"} onclick={() => sortBy("date")}>수정한 날짜 {by === "date" ? arrow : ""}</button>
       <button class="lsize" class:on={by === "size"} onclick={() => sortBy("size")}>크기 {by === "size" ? arrow : ""}</button>
       <button class="lkind" class:on={by === "type"} onclick={() => sortBy("type")}>종류 {by === "type" ? arrow : ""}</button>
@@ -240,6 +243,7 @@
             {#if m?.rating}<span class="lstars">{"★".repeat(m.rating)}</span>{/if}
             {#if e.cloud}<span class="lcloud" title="클라우드에만 있는 파일 (열면 내려받습니다)">☁</span>{/if}
           </span>
+          {#if showFolder}<span class="lfolder" title={e.folder}>{e.folder ?? ""}</span>{/if}
           <span class="ldate">{fmtDate(e.mtime)}</span>
           <span class="lsize">{e.kind === "dir" ? "" : fmtSize(e.size)}</span>
           <span class="lkind">{kindLabel(e)}</span>
@@ -281,7 +285,7 @@
               <span class="cloud" title="클라우드에만 있는 파일 (열면 내려받습니다)">☁</span>
             {/if}
           </div>
-          <div class="name" title={e.name}>{e.name}</div>
+          <div class="name" title={e.folder ? `${e.folder}/${e.name}` : e.name}>{e.name}</div>
         </div>
       {/if}
     {/each}
@@ -584,6 +588,17 @@
     flex: none;
     color: #9fc4ff;
     font-size: 12px;
+  }
+  .lfolder {
+    flex: none;
+    width: 160px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .row .lfolder {
+    font-size: 12px;
+    color: var(--text-faint);
   }
   .ldate {
     flex: none;

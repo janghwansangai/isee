@@ -1,14 +1,17 @@
 import { SvelteSet } from "svelte/reactivity";
-import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { ask, message, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
   baseName,
+  fmtDuration,
   fmtSize,
+  scopeLabel,
   type ConvertSpec,
   type Entry,
   type Mark,
   type Place,
   type SaveSpec,
+  type Scope,
   type Settings,
 } from "./api";
 
@@ -36,6 +39,7 @@ const DEFAULT_SETTINGS: Settings = {
   show_hud: false,
   keep_running: true,
   view_mode: "grid",
+  include_subfolders: false,
   thumb_size: 168,
   quick_folders: Array(9).fill(null),
   last_folder: null,
@@ -89,8 +93,12 @@ class Store {
   compareExtra: Record<string, Entry> = {};
   /** 비슷한 사진 정리 화면 */
   similar = $state(false);
-  /** 인물 화면 (연 폴더) */
-  people = $state<string | null>(null);
+  /** 인물 화면 (연 범위) */
+  people = $state<Scope | null>(null);
+  /** 함께 보는 다른 폴더 (모음). 다른 폴더로 이동하면 비운다. */
+  extra = $state<string[]>([]);
+  /** 마지막 목록에서 읽은 폴더 수 */
+  dirCount = $state(1);
   /** 재생 중인 동영상 */
   video = $state<Entry | null>(null);
   /** 편집기에 연 사진 */
@@ -115,11 +123,52 @@ class Store {
     return this.hpos < this.history.length - 1;
   }
 
+  /** 지금 보는 범위 (폴더 하나 / 하위 폴더 포함 / 다른 폴더와 함께) */
+  scope(path = this.path): Scope {
+    return { path, extra: [...this.extra], recursive: this.settings.include_subfolders };
+  }
+
+  /** 폴더 하나만 보는지 (하위 폴더·다른 폴더를 함께 보지 않음) */
+  get singleFolder() {
+    return !this.extra.length && !this.settings.include_subfolders;
+  }
+
+  /** 다른 폴더를 더해 함께 본다 */
+  async addFolders(paths: string[]) {
+    const add = paths.filter((p) => p !== this.path && !this.extra.includes(p));
+    if (!add.length || !this.path) return;
+    this.extra = [...this.extra, ...add];
+    await this.reload();
+  }
+
+  async removeFolder(p: string) {
+    this.extra = this.extra.filter((x) => x !== p);
+    await this.reload();
+  }
+
+  async clearFolders() {
+    this.extra = [];
+    await this.reload();
+  }
+
+  /** 함께 볼 폴더를 골라 더한다 (여러 개 고를 수 있음) */
+  async pickAddFolders() {
+    if (!this.path) return;
+    const p = await openDialog({ directory: true, multiple: true, title: "함께 볼 폴더 고르기" });
+    const list = Array.isArray(p) ? p : typeof p === "string" ? [p] : [];
+    if (list.length) await this.addFolders(list);
+  }
+
+  /** 보는 범위 창 */
+  scopeOpen = $state(false);
+
   async open(path: string, opts: { push?: boolean; selectPath?: string; keepScroll?: boolean } = {}) {
     const push = opts.push ?? true;
     this.loading = true;
     try {
-      const l = await api.openFolder(path);
+      // 다른 폴더로 이동하면 함께 보던 폴더(모음)는 끝낸다
+      if (path !== this.path && this.extra.length) this.extra = [];
+      const l = await api.openFolder(this.scope(path));
       const prevPath = this.path;
       this.entries = l.entries;
       this.marks = l.marks;
@@ -127,6 +176,8 @@ class Store {
       this.path = l.path;
       this.parent = l.parent;
       this.listMs = l.ms;
+      this.dirCount = l.dirs;
+      if (l.truncated) this.warnTruncated(l.entries.length);
       this.error = null;
       this.selected.clear();
       let focus = l.entries.length ? 0 : -1;
@@ -156,17 +207,80 @@ class Store {
     }
   }
 
+  /** "분석 미리 해 두기"로 시작한 비슷한 사진 분석이 끝나면 알린다 */
+  aheadSimilar = false;
+
+  /** 분석 미리 해 두기: 지금 범위의 비슷한 사진(그리고 설치했으면 얼굴) 분석을 화면 없이 뒤에서 시작 */
+  async analyzeAhead() {
+    if (!this.path) return;
+    const sc = this.scope();
+    const st = await api.facesStatus().catch(() => null);
+    const faces = !!st?.installed;
+    if (!(await this.confirmAnalysis(sc, faces))) return;
+    try {
+      const [done, total] = await api.analyzeFolder(sc);
+      if (faces) await api.facesAnalyze(sc).catch(() => undefined);
+      this.aheadSimilar = done < total;
+      this.showToast(
+        done < total
+          ? `"${scopeLabel(sc)}" 분석을 뒤에서 시작했습니다 (사진 ${total.toLocaleString()}장). 아래 "백그라운드 작업"에서 볼 수 있습니다.`
+          : `"${scopeLabel(sc)}"은 이미 분석해 두었습니다${faces ? " (얼굴은 뒤에서 확인 중)" : ""}`,
+      );
+    } catch (e) {
+      this.showToast(`분석을 시작하지 못했습니다: ${e}`, { error: true });
+    }
+  }
+
+  /** 새로 분석할 사진이 이보다 많으면 시작 전에 걸릴 시간을 알리고 묻는다 */
+  static readonly BIG_ANALYSIS = 2000;
+
+  /** 사진이 많으면 분석 전에 묻는다. faces: 얼굴 분석도 할 때. 진행하면 true. */
+  async confirmAnalysis(sc: Scope, faces = false): Promise<boolean> {
+    let est;
+    try {
+      est = await api.analysisEstimate(sc);
+    } catch {
+      return true;
+    }
+    const todo = Math.max(est.similar_todo, faces ? est.faces_todo : 0);
+    if (todo <= Store.BIG_ANALYSIS) return true;
+    const lines = [`· 비슷한 사진 찾기: ${est.similar_todo.toLocaleString()}장, ${fmtDuration(est.similar_ms)}`];
+    if (faces && est.faces_todo) lines.push(`· 얼굴 찾기: ${est.faces_todo.toLocaleString()}장, ${fmtDuration(est.faces_ms)}`);
+    return ask(
+      `사진 ${est.total.toLocaleString()}장 중 ${todo.toLocaleString()}장을 새로 분석합니다.\n${lines.join("\n")}\n\n` +
+        `분석은 뒤에서 계속되므로 다른 사진을 봐도 되고, 앱을 닫았다가 다시 열면 분석한 곳 다음부터 이어서 합니다. ` +
+        `보는 동안 느리면 백그라운드 작업 창에서 잠시 멈출 수 있습니다.` +
+        (est.cloud ? `\n\n클라우드에만 있는 ${est.cloud.toLocaleString()}장은 내려받지 않으므로 분석하지 않습니다.` : ""),
+      { title: "사진이 많습니다", kind: "warning", okLabel: "분석 시작", cancelLabel: "취소" },
+    );
+  }
+
+  /** 너무 많아 일부만 모았을 때 (프로그램이 멈추거나 메모리가 모자라지 않게 한도에서 멈춤) */
+  private warnedAt = "";
+  private warnTruncated(n: number) {
+    const key = JSON.stringify(this.scope());
+    if (this.warnedAt === key) return;
+    this.warnedAt = key;
+    message(
+      `파일이 너무 많아 처음 ${n.toLocaleString()}개까지만 보여 줍니다.\n\n` +
+        `속도와 안정을 위해 "하위 폴더 포함"을 끄거나, 더 작은 폴더를 열거나, 함께 보는 폴더를 줄여 주세요.`,
+      { title: "사진이 너무 많습니다", kind: "warning" },
+    );
+  }
+
   /** 같은 폴더를 다시 읽는다. 선택은 경로 기준으로, 포커스는 같은 위치(다음 파일)로 유지. */
   async reload() {
     if (!this.path) return;
     const keep = new Set(this.selectedPaths());
     const focusAt = this.focus;
     const viewerAt = this.viewer;
-    const l = await api.openFolder(this.path);
+    const l = await api.openFolder(this.scope());
     this.entries = l.entries;
     this.marks = l.marks;
     this.imageTotal = l.image_total;
     this.listMs = l.ms;
+    this.dirCount = l.dirs;
+    if (l.truncated) this.warnTruncated(l.entries.length);
     this.selected.clear();
     l.entries.forEach((e, i) => keep.has(e.path) && this.selected.add(i));
     this.focus = Math.min(focusAt, l.entries.length - 1);
@@ -354,7 +468,7 @@ class Store {
     this.compare = null;
     this.similar = false;
     this.organize = null;
-    this.people = this.path;
+    this.people = this.scope();
   }
 
   /** 편집기: 뷰어에서 보는 사진, 아니면 고른 사진 한 장 */
@@ -376,7 +490,9 @@ class Store {
     this.viewer = -1;
     this.compare = null;
     this.similar = false;
-    this.organize = { folder: this.path, paths: sel.length >= 2 ? sel : [] };
+    // 하위 폴더·다른 폴더를 함께 보고 있으면 보이는 사진·동영상 전부가 대상
+    const all = this.singleFolder ? [] : this.entries.filter((e) => e.kind === "image" || e.kind === "video").map((e) => e.path);
+    this.organize = { folder: this.path, paths: sel.length >= 2 ? sel : all };
   }
 
   /** 비슷한 사진 정리 화면 (지금 폴더) */
@@ -450,6 +566,7 @@ class Store {
       prev.sort_by !== next.sort_by ||
       prev.sort_desc !== next.sort_desc ||
       prev.show_hidden !== next.show_hidden ||
+      prev.include_subfolders !== next.include_subfolders ||
       prev.culling !== next.culling ||
       (next.culling && prev.cull_filter !== next.cull_filter);
     if (relist && this.path) this.reload();

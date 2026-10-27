@@ -26,6 +26,7 @@
   import Dialogs from "./components/Dialogs.svelte";
   import Compare from "./components/Compare.svelte";
   import SimilarView from "./components/SimilarView.svelte";
+  import ScopePanel from "./components/ScopePanel.svelte";
   import OrganizeView from "./components/OrganizeView.svelte";
   import EditorView from "./components/EditorView.svelte";
   import VideoPlayer from "./components/VideoPlayer.svelte";
@@ -119,7 +120,7 @@
   }
 
   // 비교·비슷한 사진 화면이 덮고 있을 때 메뉴로 받아도 되는 것 (보이지 않는 그리드 선택을 지우거나 옮기지 않게)
-  const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update", "bg_panel"]);
+  const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update", "bg_panel", "analyze_ahead"]);
 
   function onMenu(id: string) {
     // 편집기에서는 실행 취소가 편집 단계를 되돌린다
@@ -187,6 +188,10 @@
       case "bg_panel":
         bgOpen = true;
         return;
+      case "analyze_ahead":
+        return store.analyzeAhead();
+      case "add_folders":
+        return store.pickAddFolders();
       case "check_update":
         return checkForUpdate(true);
       case "shell_install":
@@ -577,6 +582,16 @@
         openPath(e.payload.path);
       }),
       listen<string>("menu", (e) => onMenu(e.payload)),
+      // "분석 미리 해 두기"가 끝나면 알린다 (비슷한 사진 화면을 연 상태면 그 화면이 보여 주므로 생략)
+      listen<[number, number]>("analysis-progress", (e) => {
+        const [done, total] = e.payload;
+        if (store.aheadSimilar && total > 0 && done >= total) {
+          store.aheadSimilar = false;
+          const cloud = stats?.bg.similar_cloud ?? 0;
+          const note = cloud ? `${(total - cloud).toLocaleString()}장, 클라우드에만 있는 ${cloud.toLocaleString()}장 제외` : `${total.toLocaleString()}장`;
+          if (!store.similar) store.showToast(`비슷한 사진 분석이 끝났습니다 (${note}). "비슷한 사진"을 누르면 바로 보입니다.`);
+        }
+      }),
       listen<[number, number]>("convert-progress", (e) => {
         if (store.progress) store.progress = { ...store.progress, done: e.payload[0], total: e.payload[1] };
       }),
@@ -604,7 +619,7 @@
     <div class="info"><InfoPanel /></div>
   {/if}
   <footer class="status">
-    <span>사진 {imageCount.toLocaleString()}장</span>
+    <span>사진 {imageCount.toLocaleString()}장{store.dirCount > 1 ? ` · 폴더 ${store.dirCount.toLocaleString()}개` : ""}</span>
     {#if dirCount}<span>폴더 {dirCount}개</span>{/if}
     {#if otherCount}<span>기타 {otherCount}개</span>{/if}
     {#if store.selected.size > 1}<span>{store.selected.size}개 선택 · {fmtSize(selSize)}</span>{/if}
@@ -657,6 +672,10 @@
 
 {#if store.video}
   <VideoPlayer />
+{/if}
+
+{#if store.scopeOpen}
+  <ScopePanel onclose={() => (store.scopeOpen = false)} />
 {/if}
 
 {#if bgOpen}
