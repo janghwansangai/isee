@@ -1,7 +1,7 @@
 <script lang="ts">
   import { SvelteSet } from "svelte/reactivity";
   import { store } from "../lib/store.svelte";
-  import { api, thumbUrl } from "../lib/api";
+  import { api, thumbUrl, fmtDate, fmtSize, type Entry, type Settings } from "../lib/api";
   import Icon from "./Icon.svelte";
 
   /** 썸네일을 만들 수 없는 파일 (종류 아이콘으로 대신) */
@@ -27,22 +27,31 @@
   const GAP = 8;
   const CAPTION = 22;
   const PAD = 12;
+  // 목록 보기: 한 줄 높이와 위 머리글(이름·날짜·크기·종류) 높이
+  const ROW = 30;
+  const HEAD = 28;
 
   let el: HTMLDivElement;
   let width = $state(0);
   let height = $state(0);
   let scrollTop = $state(0);
 
+  let list = $derived(store.settings.view_mode === "list");
   let size = $derived(store.settings.thumb_size);
   $effect(() => {
-    cols = Math.max(1, Math.floor((width - PAD * 2 + GAP) / (size + GAP)));
+    cols = list ? 1 : Math.max(1, Math.floor((width - PAD * 2 + GAP) / (size + GAP)));
   });
-  let cellW = $derived(Math.max(40, (width - PAD * 2 - GAP * (cols - 1)) / cols));
-  let rowH = $derived(cellW + CAPTION + GAP);
+  let cellW = $derived(list ? width : Math.max(40, (width - PAD * 2 - GAP * (cols - 1)) / cols));
+  let rowH = $derived(list ? ROW : cellW + CAPTION + GAP);
   let rows = $derived(Math.ceil(store.entries.length / cols));
+  // 첫 줄의 위치: 스크롤 영역 기준(top0)과 칸을 그리는 판 기준(cy0). 목록은 머리글이 판 위에 붙어 있다.
+  let top0 = $derived(list ? HEAD : PAD);
+  let cy0 = $derived(list ? 0 : PAD);
+  // 목록 머리글은 스크롤해도 위에 붙어 있어 그 아래부터 보인다
+  let hidTop = $derived(list ? HEAD : 0);
   // 화면에 실제로 보이는 줄 (썸네일 우선순위용)
-  let viewFirst = $derived(Math.max(0, Math.floor((scrollTop - PAD) / rowH)));
-  let viewLast = $derived(Math.min(rows - 1, Math.floor((scrollTop + height - PAD) / rowH)));
+  let viewFirst = $derived(Math.max(0, Math.floor((scrollTop + hidTop - top0) / rowH)));
+  let viewLast = $derived(Math.min(rows - 1, Math.floor((scrollTop + height - top0) / rowH)));
   // DOM으로 그리는 줄: 위아래로 2줄 여유
   let first = $derived(Math.max(0, viewFirst - 2));
   let last = $derived(Math.min(rows - 1, viewLast + 2));
@@ -66,9 +75,10 @@
   $effect(() => {
     const t = store.scrollTo;
     if (t < 0 || !el || !height) return;
-    const top = PAD + Math.floor(t / cols) * rowH;
-    if (top < el.scrollTop) el.scrollTop = top - GAP;
-    else if (top + rowH > el.scrollTop + height) el.scrollTop = top + rowH - height + GAP;
+    const top = top0 + Math.floor(t / cols) * rowH;
+    const margin = list ? 0 : GAP;
+    if (top < el.scrollTop + hidTop) el.scrollTop = top - hidTop - margin;
+    else if (top + rowH > el.scrollTop + height) el.scrollTop = top + rowH - height + margin;
     store.scrollTo = -1;
   });
 
@@ -88,8 +98,21 @@
 
   let down: { x: number; y: number; i: number; deferSelect: boolean } | null = null;
 
+  // 목록 머리글: 같은 칸을 다시 누르면 오름·내림 순서를 바꾼다
+  function sortBy(by: Settings["sort_by"]) {
+    if (store.settings.sort_by === by) store.setSettings({ sort_desc: !store.settings.sort_desc });
+    else store.setSettings({ sort_by: by, sort_desc: false });
+  }
+
+  function kindLabel(e: Entry): string {
+    if (e.kind === "dir") return "폴더";
+    const dot = e.name.lastIndexOf(".");
+    return dot > 0 ? e.name.slice(dot + 1).toUpperCase() : "";
+  }
+
   function onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest(".lhead")) return;
     const i = indexAt(e);
     if (i < 0) {
       store.selected.clear();
@@ -169,50 +192,98 @@
       {#if !store.error}<div class="hint">보기 › 파일 종류에서 다른 종류를 켤 수 있습니다</div>{/if}
     </div>
   {/if}
-  <div class="canvas" style="height:{rows * rowH + PAD * 2}px">
+  {#if list}
+    {@const by = store.settings.sort_by}
+    {@const arrow = store.settings.sort_desc ? "▼" : "▲"}
+    <div class="lhead" style="height:{HEAD}px">
+      <span class="lcheck"></span>
+      <span class="lthumb"></span>
+      <button class="lname" class:on={by === "name"} onclick={() => sortBy("name")}>이름 {by === "name" ? arrow : ""}</button>
+      <button class="ldate" class:on={by === "date"} onclick={() => sortBy("date")}>수정한 날짜 {by === "date" ? arrow : ""}</button>
+      <button class="lsize" class:on={by === "size"} onclick={() => sortBy("size")}>크기 {by === "size" ? arrow : ""}</button>
+      <button class="lkind" class:on={by === "type"} onclick={() => sortBy("type")}>종류 {by === "type" ? arrow : ""}</button>
+    </div>
+  {/if}
+  <div class="canvas" style="height:{rows * rowH + cy0 + (list ? 0 : PAD)}px">
     {#each visible as i (store.entries[i].path)}
       {@const e = store.entries[i]}
-      {@const x = PAD + (i % cols) * (cellW + GAP)}
-      {@const y = PAD + Math.floor(i / cols) * rowH}
+      {@const x = list ? 0 : PAD + (i % cols) * (cellW + GAP)}
+      {@const y = cy0 + Math.floor(i / cols) * rowH}
       {@const m = store.marks[e.path]}
-      <div
-        class="cell"
-        class:sel={store.selected.has(i)}
-        class:focus={store.focus === i}
-        class:drop={e.kind === "dir" && store.dropOver === e.path}
-        style="transform:translate({x}px,{y}px);width:{cellW}px"
-        data-index={i}
-        data-drop-path={e.kind === "dir" ? e.path : undefined}
-        role="option"
-        aria-selected={store.selected.has(i)}
-      >
-        <div class="thumb" class:rejected={m?.flag === -1} class:multi={store.selected.size > 1} style="height:{cellW}px">
-          <span class="check" class:on={store.selected.has(i)} data-check title="여러 개 고르기">{store.selected.has(i) ? "✓" : ""}</span>
-          {#if m?.flag}
-            <span class="flag" class:pick={m.flag === 1}>{m.flag === 1 ? "✓" : "✕"}</span>
-          {/if}
-          {#if m?.rating}
-            <span class="stars">{"★".repeat(m.rating)}</span>
-          {/if}
-          {#if (e.kind === "image" || e.kind === "video" || e.kind === "pdf") && !broken.has(`${e.path}|${e.mtime}`)}
-            <img
-              src={thumbUrl(e, i)}
-              alt=""
-              draggable="false"
-              decoding="async"
-              onerror={() => broken.add(`${e.path}|${e.mtime}`)}
-            />
-            {#if e.kind === "video"}<span class="badge play">▶</span>{/if}
-            {#if e.kind === "pdf"}<span class="badge">PDF</span>{/if}
-          {:else}
-            <span class="kind {e.kind}"><Icon name={e.kind} size={Math.round(cellW * 0.42)} /></span>
-          {/if}
-          {#if e.cloud}
-            <span class="cloud" title="클라우드에만 있는 파일 (열면 내려받습니다)">☁</span>
-          {/if}
+      {@const thumbable = (e.kind === "image" || e.kind === "video" || e.kind === "pdf") && !broken.has(`${e.path}|${e.mtime}`)}
+      {#if list}
+        <div
+          class="cell row"
+          class:odd={i % 2 === 1}
+          class:sel={store.selected.has(i)}
+          class:focus={store.focus === i}
+          class:drop={e.kind === "dir" && store.dropOver === e.path}
+          class:multi={store.selected.size > 1}
+          class:rejected={m?.flag === -1}
+          style="transform:translateY({y}px);width:{cellW}px;height:{ROW}px"
+          data-index={i}
+          data-drop-path={e.kind === "dir" ? e.path : undefined}
+          role="option"
+          aria-selected={store.selected.has(i)}
+        >
+          <span class="check lcheck" class:on={store.selected.has(i)} data-check title="여러 개 고르기">{store.selected.has(i) ? "✓" : ""}</span>
+          <span class="lthumb">
+            {#if thumbable}
+              <img src={thumbUrl(e, i)} alt="" draggable="false" decoding="async" onerror={() => broken.add(`${e.path}|${e.mtime}`)} />
+            {:else}
+              <span class="kind {e.kind}"><Icon name={e.kind} size={18} /></span>
+            {/if}
+          </span>
+          <span class="lname" title={e.name}>
+            <span class="ltext">{e.name}</span>
+            {#if m?.flag}<span class="lflag" class:pick={m.flag === 1}>{m.flag === 1 ? "✓" : "✕"}</span>{/if}
+            {#if m?.rating}<span class="lstars">{"★".repeat(m.rating)}</span>{/if}
+            {#if e.cloud}<span class="lcloud" title="클라우드에만 있는 파일 (열면 내려받습니다)">☁</span>{/if}
+          </span>
+          <span class="ldate">{fmtDate(e.mtime)}</span>
+          <span class="lsize">{e.kind === "dir" ? "" : fmtSize(e.size)}</span>
+          <span class="lkind">{kindLabel(e)}</span>
         </div>
-        <div class="name" title={e.name}>{e.name}</div>
-      </div>
+      {:else}
+        <div
+          class="cell"
+          class:sel={store.selected.has(i)}
+          class:focus={store.focus === i}
+          class:drop={e.kind === "dir" && store.dropOver === e.path}
+          style="transform:translate({x}px,{y}px);width:{cellW}px"
+          data-index={i}
+          data-drop-path={e.kind === "dir" ? e.path : undefined}
+          role="option"
+          aria-selected={store.selected.has(i)}
+        >
+          <div class="thumb" class:rejected={m?.flag === -1} class:multi={store.selected.size > 1} style="height:{cellW}px">
+            <span class="check" class:on={store.selected.has(i)} data-check title="여러 개 고르기">{store.selected.has(i) ? "✓" : ""}</span>
+            {#if m?.flag}
+              <span class="flag" class:pick={m.flag === 1}>{m.flag === 1 ? "✓" : "✕"}</span>
+            {/if}
+            {#if m?.rating}
+              <span class="stars">{"★".repeat(m.rating)}</span>
+            {/if}
+            {#if thumbable}
+              <img
+                src={thumbUrl(e, i)}
+                alt=""
+                draggable="false"
+                decoding="async"
+                onerror={() => broken.add(`${e.path}|${e.mtime}`)}
+              />
+              {#if e.kind === "video"}<span class="badge play">▶</span>{/if}
+              {#if e.kind === "pdf"}<span class="badge">PDF</span>{/if}
+            {:else}
+              <span class="kind {e.kind}"><Icon name={e.kind} size={Math.round(cellW * 0.42)} /></span>
+            {/if}
+            {#if e.cloud}
+              <span class="cloud" title="클라우드에만 있는 파일 (열면 내려받습니다)">☁</span>
+            {/if}
+          </div>
+          <div class="name" title={e.name}>{e.name}</div>
+        </div>
+      {/if}
     {/each}
   </div>
 </div>
@@ -387,5 +458,160 @@
   }
   .hint {
     font-size: 12px;
+  }
+
+  /* ───── 목록 보기 ───── */
+  .lhead {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-faint);
+  }
+  .lhead button {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .lhead button:hover,
+  .lhead button.on {
+    color: var(--text);
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .row.odd {
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .row.sel {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+  .row.focus:not(.sel) {
+    box-shadow: inset 0 0 0 1px #4a4b55;
+  }
+  .row.drop {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .row.rejected .ltext,
+  .row.rejected .lthumb img {
+    opacity: 0.4;
+  }
+  .lcheck {
+    flex: none;
+    width: 16px;
+  }
+  /* 체크 상자: 자리는 늘 두고(줄이 흔들리지 않게) 올렸을 때·여러 개 골랐을 때·고른 줄만 보인다 */
+  .row .check {
+    position: static;
+    display: inline-flex;
+    visibility: hidden;
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  .row:hover .check,
+  .row.multi .check,
+  .row .check.on {
+    visibility: visible;
+  }
+  .lthumb {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .lthumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .lname {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ltext {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .row.sel .ltext {
+    color: var(--text);
+  }
+  .lflag {
+    flex: none;
+    color: #d94848;
+    font-weight: 700;
+    font-size: 12px;
+  }
+  .lflag.pick {
+    color: var(--ok);
+  }
+  .lstars {
+    flex: none;
+    color: #f5c451;
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
+  .lcloud {
+    flex: none;
+    color: #9fc4ff;
+    font-size: 12px;
+  }
+  .ldate {
+    flex: none;
+    width: 128px;
+    font-variant-numeric: tabular-nums;
+  }
+  .lsize {
+    flex: none;
+    width: 72px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .lhead .lsize {
+    text-align: right;
+  }
+  .lkind {
+    flex: none;
+    width: 52px;
+  }
+  .row .ldate,
+  .row .lsize,
+  .row .lkind {
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+  .row.sel .ldate,
+  .row.sel .lsize,
+  .row.sel .lkind {
+    color: var(--text-dim);
   }
 </style>

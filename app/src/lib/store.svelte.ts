@@ -35,6 +35,7 @@ const DEFAULT_SETTINGS: Settings = {
   show_info: true,
   show_hud: false,
   keep_running: true,
+  view_mode: "grid",
   thumb_size: 168,
   quick_folders: Array(9).fill(null),
   last_folder: null,

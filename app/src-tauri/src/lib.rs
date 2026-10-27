@@ -516,15 +516,21 @@ async fn similar_report(app: AppHandle, path: String, options: similar::Options)
         let total = reqs.len();
         let feats = state.analysis.features(&reqs);
         let marks = state.marks.in_dir(Path::new(&path));
+        let mut cloud = 0;
         let items: Vec<similar::Item> = reqs
             .into_iter()
             .zip(feats)
             .filter_map(|(r, f)| {
+                if f.is_none() && listing::is_online_only(Path::new(&r.path)) {
+                    cloud += 1;
+                }
                 let m = marks.get(&r.path).copied().unwrap_or_default();
                 Some(similar::Item { path: r.path, size: r.size, mtime: r.mtime, flag: m.flag, rating: m.rating, f: f? })
             })
             .collect();
-        Ok(similar::report(&items, total, &options))
+        let mut report = similar::report(&items, total, &options);
+        report.cloud = cloud;
+        Ok(report)
     })
     .await
     .map_err(err)?
@@ -1188,6 +1194,8 @@ struct BgStatus {
     thumbs: usize,
     /// 비슷한 사진 분석 (끝난 수, 전체)
     similar: (usize, usize),
+    /// 그중 클라우드에만 있어 분석하지 않고 넘긴 수
+    similar_cloud: usize,
     /// 얼굴 분석 (끝난 수, 전체)
     faces: (usize, usize),
 }
@@ -1198,6 +1206,7 @@ fn bg_status(state: &AppState) -> BgStatus {
         prefill: state.settings.lock().bg_prefill,
         thumbs: state.thumbs.background_pending(),
         similar: state.analysis.progress(),
+        similar_cloud: state.analysis.skipped(),
         faces: state.faces.progress(),
     }
 }

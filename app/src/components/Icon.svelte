@@ -25,6 +25,8 @@
     trash: "M4.5 7h15 M9.5 7V4.5h5V7 M6.5 7l1 13h9l1-13",
     bolt: "M13 3L5 13.5h6L10 21l8-10.5h-6z",
     sort: "M7 5v14 M4 16l3 3 3-3 M17 19V5 M14 8l3-3 3 3",
+    grid: "M4.5 4.5h6v6h-6z M13.5 4.5h6v6h-6z M4.5 13.5h6v6h-6z M13.5 13.5h6v6h-6z",
+    list: "M4 6.5h.01 M8 6.5h12 M4 12h.01 M8 12h12 M4 17.5h.01 M8 17.5h12",
   };
   let d = $derived(paths[name] ?? paths.other);
 </script>

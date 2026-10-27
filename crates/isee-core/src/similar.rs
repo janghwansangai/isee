@@ -90,6 +90,8 @@ pub struct Report {
     pub bright: Vec<Photo>,
     pub analyzed: usize,
     pub total: usize,
+    /// 클라우드에만 있어(내려받지 않음) 분석하지 못한 사진 수 (앱이 채운다)
+    pub cloud: usize,
     pub ms: f64,
 }
 
@@ -369,6 +371,7 @@ pub fn report(items: &[Item], total: usize, opt: &Options) -> Report {
         bright,
         analyzed: items.len(),
         total,
+        cloud: 0,
         ms: t0.elapsed().as_secs_f64() * 1000.0,
     }
 }

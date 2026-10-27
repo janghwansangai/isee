@@ -312,6 +312,8 @@ struct State {
     queue: VecDeque<Req>,
     total: usize,
     done: usize,
+    /// 클라우드에만 있어(내려받지 않음) 분석하지 않고 넘긴 수
+    skipped: usize,
 }
 
 struct Inner {
@@ -350,12 +352,19 @@ impl AnalysisService {
         *self.inner.on_progress.lock() = Some(f);
     }
 
-    /// 이 사진들을 분석한다 (이전 요청은 취소). 이미 저장된 것은 끝난 것으로 센다.
+    /// 이 사진들을 분석한다 (이전 요청은 취소). 이미 저장된 것과, 클라우드에만 있어 읽을 수 없는 것
+    /// (읽으면 내려받기가 시작됨)은 끝난 것으로 센다.
     pub fn analyze(&self, reqs: Vec<Req>) -> (usize, usize) {
         let mut todo = VecDeque::new();
         let total = reqs.len();
+        let mut skipped = 0;
         for r in reqs {
-            if self.inner.store.get(&r).is_none() {
+            if self.inner.store.get(&r).is_some() {
+                continue;
+            }
+            if crate::listing::is_online_only(Path::new(&r.path)) {
+                skipped += 1;
+            } else {
                 todo.push_back(r);
             }
         }
@@ -365,6 +374,7 @@ impl AnalysisService {
         st.queue = todo;
         st.total = total;
         st.done = done;
+        st.skipped = skipped;
         drop(st);
         self.inner.cv.notify_all();
         (done, total)
@@ -373,6 +383,11 @@ impl AnalysisService {
     pub fn progress(&self) -> (usize, usize) {
         let st = self.inner.st.lock();
         (st.done, st.total)
+    }
+
+    /// 지금 분석 중인 폴더에서 클라우드에만 있어 넘긴 수
+    pub fn skipped(&self) -> usize {
+        self.inner.st.lock().skipped
     }
 
     /// 저장된 특징값 (아직 분석 안 된 것은 None)

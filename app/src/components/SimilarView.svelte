@@ -75,7 +75,8 @@
     api
       .analyzeFolder(folder)
       .then((p) => {
-        progress = p;
+        // 분석할 것이 적으면(클라우드 사진은 건너뜀) 끝났다는 알림이 이 응답보다 먼저 온다: 더 나아간 쪽을 쓴다
+        if (!(progress[1] === p[1] && progress[0] > p[0])) progress = p;
         refresh();
       })
       .catch((e) => store.showToast(`분석을 시작하지 못했습니다: ${e}`, { error: true }));
@@ -207,7 +208,15 @@
         <span class="bar"><span style="width:{(progress[0] / Math.max(1, progress[1])) * 100}%"></span></span>
       </span>
     {:else if report}
-      <span class="dim small">{label(report.total)} 분석 완료</span>
+      <span class="dim small">{label(report.analyzed)} 분석 완료</span>
+      {#if report.cloud}
+        <span
+          class="cloud-note"
+          title="구글 드라이브·iCloud 등에서 아직 내려받지 않은 사진은 읽으면 내려받기가 시작되므로 분석하지 않습니다. Finder에서 폴더를 '오프라인으로 사용 가능'으로 하거나 사진을 내려받으면 다음에 분석합니다."
+        >
+          ☁ 클라우드에만 있는 {label(report.cloud)}은 내려받지 않아 분석하지 않음
+        </span>
+      {/if}
     {/if}
     <span class="spacer"></span>
     <button class="icon-btn" title="닫기 (Esc)" onclick={close}><Icon name="close" /></button>
@@ -423,6 +432,10 @@
   }
   .spacer {
     flex: 1;
+  }
+  .cloud-note {
+    font-size: 12px;
+    color: #9fc4ff;
   }
   .progress {
     display: flex;

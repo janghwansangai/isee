@@ -129,8 +129,27 @@
         {#each sorts as s (s.v)}<option value={s.v}>{s.t}</option>{/each}
       </select>
     </label>
+    <div class="seg" role="group" aria-label="보기 방식">
+      <button
+        class="icon-btn"
+        class:on={store.settings.view_mode !== "list"}
+        onclick={() => store.setSettings({ view_mode: "grid" })}
+        title="썸네일로 보기 ({isMac ? "⌘1" : "Ctrl+1"})"
+      >
+        <Icon name="grid" size={16} />
+      </button>
+      <button
+        class="icon-btn"
+        class:on={store.settings.view_mode === "list"}
+        onclick={() => store.setSettings({ view_mode: "list" })}
+        title="목록으로 보기: 파일 이름·날짜·크기 ({isMac ? "⌘2" : "Ctrl+2"})"
+      >
+        <Icon name="list" size={16} />
+      </button>
+    </div>
     <input
       class="size"
+      class:hidden={store.settings.view_mode === "list"}
       type="range"
       min="88"
       max="320"
@@ -256,6 +275,14 @@
   .size {
     width: 96px;
     accent-color: var(--accent);
+  }
+  /* 목록 보기에서는 썸네일 크기가 의미 없으므로 자리만 지킨다 (툴바가 흔들리지 않게) */
+  .size.hidden {
+    visibility: hidden;
+  }
+  .seg {
+    display: flex;
+    gap: 0;
   }
   .icon-btn.on {
     color: var(--accent);

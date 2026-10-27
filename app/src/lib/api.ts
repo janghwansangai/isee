@@ -66,6 +66,7 @@ export interface Settings {
   show_info: boolean;
   show_hud: boolean;
   keep_running: boolean;
+  view_mode: "grid" | "list";
   thumb_size: number;
   quick_folders: (string | null)[];
   last_folder: string | null;
@@ -174,6 +175,8 @@ export interface SimilarReport {
   bright: Photo[];
   analyzed: number;
   total: number;
+  /** 클라우드에만 있어(내려받지 않음) 분석하지 못한 사진 수 */
+  cloud: number;
   ms: number;
 }
 
@@ -249,6 +252,8 @@ export interface BgStatus {
   prefill: boolean;
   thumbs: number;
   similar: [number, number];
+  /** 비슷한 사진 분석에서 클라우드에만 있어 넘긴 수 */
+  similar_cloud: number;
   faces: [number, number];
 }
 

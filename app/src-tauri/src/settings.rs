@@ -38,6 +38,8 @@ pub struct Settings {
     pub show_hud: bool,
     /// 창을 닫아도 앱을 띄워 두어 다음에 바로 열리게 한다 (맥)
     pub keep_running: bool,
+    /// 보기 방식: "grid"(썸네일) | "list"(목록: 이름·날짜·크기)
+    pub view_mode: String,
     /// 썸네일 칸 크기 (CSS px)
     pub thumb_size: u32,
     /// 숫자키 1~9 빠른 이동 폴더
@@ -72,6 +74,7 @@ impl Default for Settings {
             show_info: true,
             show_hud: false,
             keep_running: true,
+            view_mode: "grid".into(),
             thumb_size: 168,
             quick_folders: vec![None; 9],
             last_folder: None,

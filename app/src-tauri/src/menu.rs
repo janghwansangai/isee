@@ -38,8 +38,8 @@ fn mac_accel(a: &'static str) -> Option<&'static str> {
 pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)> {
     let sep = || PredefinedMenuItem::separator(app);
     let mut checks: Checks = HashMap::new();
-    let mut check = |id: &'static str, label: &str, on: bool| -> tauri::Result<CheckMenuItem<Wry>> {
-        let c = CheckMenuItem::with_id(app, id, label, true, on, None::<&str>)?;
+    let mut check = |id: &'static str, label: &str, on: bool, accel: Option<&'static str>| -> tauri::Result<CheckMenuItem<Wry>> {
+        let c = CheckMenuItem::with_id(app, id, label, true, on, accel)?;
         checks.insert(id, c.clone());
         Ok(c)
     };
@@ -49,11 +49,11 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         "파일 종류",
         true,
         &[
-            &check("kind_image", "이미지", s.kinds.image)?,
-            &check("kind_video", "동영상", s.kinds.video)?,
-            &check("kind_pdf", "PDF", s.kinds.pdf)?,
-            &check("kind_doc", "문서", s.kinds.doc)?,
-            &check("kind_other", "기타 파일", s.kinds.other)?,
+            &check("kind_image", "이미지", s.kinds.image, None)?,
+            &check("kind_video", "동영상", s.kinds.video, None)?,
+            &check("kind_pdf", "PDF", s.kinds.pdf, None)?,
+            &check("kind_doc", "문서", s.kinds.doc, None)?,
+            &check("kind_other", "기타 파일", s.kinds.other, None)?,
         ],
     )?;
     let sort = Submenu::with_items(
@@ -61,13 +61,13 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         "정렬",
         true,
         &[
-            &check("sort_name", "이름", s.sort_by == "name")?,
-            &check("sort_date", "수정한 날짜", s.sort_by == "date")?,
-            &check("sort_size", "크기", s.sort_by == "size")?,
-            &check("sort_type", "종류", s.sort_by == "type")?,
-            &check("sort_rating", "별점", s.sort_by == "rating")?,
+            &check("sort_name", "이름", s.sort_by == "name", None)?,
+            &check("sort_date", "수정한 날짜", s.sort_by == "date", None)?,
+            &check("sort_size", "크기", s.sort_by == "size", None)?,
+            &check("sort_type", "종류", s.sort_by == "type", None)?,
+            &check("sort_rating", "별점", s.sort_by == "rating", None)?,
             &sep()?,
-            &check("sort_desc", "내림차순", s.sort_desc)?,
+            &check("sort_desc", "내림차순", s.sort_desc, None)?,
         ],
     )?;
     let view = Submenu::with_items(
@@ -75,15 +75,18 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         "보기",
         true,
         &[
+            &check("view_grid", "썸네일로 보기", s.view_mode != "list", None)?,
+            &check("view_list", "목록으로 보기", s.view_mode == "list", None)?,
+            &sep()?,
             &kinds,
             &sort,
             &sep()?,
             &MenuItem::with_id(app, "thumbs_bigger", "썸네일 크게", true, mac_accel("CmdOrCtrl+="))?,
             &MenuItem::with_id(app, "thumbs_smaller", "썸네일 작게", true, mac_accel("CmdOrCtrl+-"))?,
             &sep()?,
-            &check("show_info", "정보 패널", s.show_info)?,
-            &check("show_hidden", "숨김 파일 보기", s.show_hidden)?,
-            &check("show_hud", "속도 표시", s.show_hud)?,
+            &check("show_info", "정보 패널", s.show_info, None)?,
+            &check("show_hidden", "숨김 파일 보기", s.show_hidden, None)?,
+            &check("show_hud", "속도 표시", s.show_hud, None)?,
             &MenuItem::with_id(app, "bg_panel", "백그라운드 작업…", true, None::<&str>)?,
             &sep()?,
             &PredefinedMenuItem::fullscreen(app, Some("전체 화면"))?,
@@ -140,7 +143,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         &[
             &MenuItem::with_id(app, "edit", "사진 편집…", true, Some("CmdOrCtrl+E"))?,
             &MenuItem::with_id(app, "compare", "선택한 사진 비교", true, None::<&str>)?,
-            &check("culling", "빠른 고르기 모드 (P 남김 · X 버림 · 숫자 별점)", s.culling)?,
+            &check("culling", "빠른 고르기 모드 (P 남김 · X 버림 · 숫자 별점)", s.culling, None)?,
             &MenuItem::with_id(app, "trash_rejected", "버린 사진 모두 휴지통으로", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "similar", "비슷한 사진 정리…", true, Some("CmdOrCtrl+Shift+S"))?,
@@ -391,6 +394,8 @@ pub fn sync_checks(checks: &Checks, s: &Settings) {
         set(&format!("sort_{by}"), s.sort_by == by);
     }
     set("sort_desc", s.sort_desc);
+    set("view_grid", s.view_mode != "list");
+    set("view_list", s.view_mode == "list");
     set("show_info", s.show_info);
     set("show_hidden", s.show_hidden);
     set("show_hud", s.show_hud);
@@ -423,6 +428,8 @@ pub fn on_event(app: &AppHandle, ev: MenuEvent) {
             "sort_type" => s.sort_by = "type".into(),
             "sort_rating" => s.sort_by = "rating".into(),
             "culling" => s.culling = !s.culling,
+            "view_grid" => s.view_mode = "grid".into(),
+            "view_list" => s.view_mode = "list".into(),
             "sort_desc" => s.sort_desc = !s.sort_desc,
             "show_info" => s.show_info = !s.show_info,
             "show_hidden" => s.show_hidden = !s.show_hidden,
@@ -438,7 +445,7 @@ pub fn on_event(app: &AppHandle, ev: MenuEvent) {
         s.save(&state.settings_path);
         sync_checks(&state.checks.lock(), &s);
         let _ = app.emit("settings-changed", &s);
-    } else if id.starts_with("kind_") || id.starts_with("sort_") || id.starts_with("show_") || id == "culling" {
+    } else if id.starts_with("kind_") || id.starts_with("sort_") || id.starts_with("show_") || id.starts_with("view_") || id == "culling" {
         // 체크 항목을 눌렀지만 값이 그대로면 macOS가 바꾼 체크 표시를 되돌린다.
         sync_checks(&state.checks.lock(), &state.settings.lock());
     } else {

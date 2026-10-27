@@ -265,6 +265,12 @@
         return;
       }
     }
+    // ⌘1 썸네일 · ⌘2 목록 (Finder와 같음). 메뉴 단축키로 걸면 뷰어의 ⌘1(실제 크기)을 가로채므로 여기서 처리한다.
+    if (mod && store.viewer < 0 && (e.code === "Digit1" || e.code === "Digit2")) {
+      e.preventDefault();
+      store.setSettings({ view_mode: e.code === "Digit1" ? "grid" : "list" });
+      return;
+    }
     if (!isMac && e.altKey) {
       const map: Record<string, () => void> = {
         ArrowLeft: () => store.back(),

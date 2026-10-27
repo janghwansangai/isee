@@ -56,6 +56,7 @@
         <b>비슷한 사진 분석</b>
         <span class="state">
           {#if running(bg.similar)}{bg.paused ? "멈춤" : "실행 중"} · {bg.similar[0].toLocaleString()} / {bg.similar[1].toLocaleString()}
+          {:else if bg.similar[1]}끝남 · {(bg.similar[1] - bg.similar_cloud).toLocaleString()}장 분석{#if bg.similar_cloud}<span class="cloud">{" · "}클라우드에만 있는 {bg.similar_cloud.toLocaleString()}장은 건너뜀</span>{/if}
           {:else}쉬는 중{/if}
         </span>
         <span class="desc">"비슷한 사진" 화면을 열었을 때만 합니다.</span>
@@ -126,6 +127,9 @@
     font-size: 12px;
     color: var(--accent);
     font-variant-numeric: tabular-nums;
+  }
+  .cloud {
+    color: #9fc4ff;
   }
   .desc {
     font-size: 11px;
