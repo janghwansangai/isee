@@ -345,6 +345,7 @@ export const api = {
   facesName: (faces: number[], person: number | null, name: string | null) =>
     invoke<number>("faces_name", { faces, person, name }),
   facesReject: (faces: number[], person: number) => invoke("faces_reject", { faces, person }),
+  facesApart: (faces: number[], others: number[]) => invoke("faces_apart", { faces, others }),
   facesDeletePerson: (person: number) => invoke("faces_delete_person", { person }),
   facesClear: () => invoke("faces_clear"),
   facesOrganize: (folder: string, recursive: boolean, root: string, mode: "copy" | "main", peopleIds: number[]) =>

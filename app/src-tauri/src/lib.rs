@@ -797,7 +797,7 @@ async fn faces_report(app: AppHandle, folder: String, recursive: bool) -> CmdRes
         let db = state.faces.db();
         let analyzed = reqs.iter().filter(|r| db.analyzed(r)).count();
         let paths: Vec<String> = reqs.into_iter().map(|r| r.path).collect();
-        people::group(db.faces_of(&paths), &db.people(), analyzed, total)
+        people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), analyzed, total)
     })
     .await
     .map_err(err)
@@ -826,6 +826,12 @@ fn faces_reject(state: State<'_, AppState>, faces: Vec<i64>, person: i64) -> Cmd
     state.faces.db().reject(&faces, person).map_err(err)
 }
 
+/// 이름 없는 묶음에서 "빼기": 고른 얼굴을 남은 얼굴과 다시 묶지 않는다
+#[tauri::command]
+fn faces_apart(state: State<'_, AppState>, faces: Vec<i64>, others: Vec<i64>) -> CmdResult<()> {
+    state.faces.db().keep_apart(&faces, &others).map_err(err)
+}
+
 #[tauri::command]
 fn faces_delete_person(state: State<'_, AppState>, person: i64) -> CmdResult<()> {
     state.faces.db().delete_person(person).map_err(err)
@@ -848,7 +854,7 @@ async fn faces_organize(app: AppHandle, folder: String, recursive: bool, root: S
         let reqs = photos_in(&state, &folder, recursive);
         let db = state.faces.db();
         let paths: Vec<String> = reqs.into_iter().map(|r| r.path).collect();
-        let report = people::group(db.faces_of(&paths), &db.people(), 0, 0);
+        let report = people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), 0, 0);
         // 얼굴 → 사람 (자동으로 넣은 것 포함), 사람 → 이름
         let mut person_of: HashMap<i64, i64> = HashMap::new();
         let mut names: HashMap<i64, String> = HashMap::new();
@@ -1451,6 +1457,7 @@ pub fn run() {
             faces_report,
             faces_name,
             faces_reject,
+            faces_apart,
             faces_delete_person,
             faces_clear,
             faces_organize,

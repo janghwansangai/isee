@@ -177,6 +177,17 @@
     act(() => api.facesReject([...picked], g.person!));
   }
 
+  /** 이름 없는 묶음에서 고른 얼굴 빼기: 남은 얼굴과 다시 묶지 않는다 (진짜 그 사람 묶음으로는 갈 수 있다) */
+  async function splitPicked() {
+    const g = sel;
+    if (!g || g.person != null || !picked.size) return;
+    const others = g.faces.filter((f) => !picked.has(f.id)).map((f) => f.id);
+    await act(() => api.facesApart([...picked], others));
+    // 대표 얼굴을 뺐으면 묶음 번호가 바뀌므로, 남은 얼굴이 있는 묶음을 계속 보여 준다
+    const left = report?.groups.find((x) => x.faces.some((f) => f.id === others[0]));
+    if (left) selKey = keyOf(left);
+  }
+
   /** 자동으로 들어온 얼굴을 모두 "맞음"으로 확인 */
   function confirmAuto() {
     const g = sel;
@@ -384,11 +395,21 @@
                 고른 {picked.size}개 "이 사람 아님"
               </button>
               <button class="btn subtle" disabled={working} onclick={deletePerson}>이름 지우기</button>
+            {:else}
+              <button
+                class="btn danger"
+                disabled={!picked.size || picked.size >= sel.faces.length || working}
+                onclick={splitPicked}
+                title="고른 얼굴을 이 묶음에서 빼고, 다시 같은 사람으로 묶지 않습니다"
+              >
+                고른 {picked.size}개 빼기
+              </button>
             {/if}
           </div>
           <p class="hint">
             얼굴을 클릭해 고르고, 두 번 클릭하면 사진을 크게 봅니다.
-            {#if sel.person != null}노란 테두리는 자동으로 넣은 얼굴입니다 (맞으면 "모두 맞음", 틀리면 골라서 "이 사람 아님").{/if}
+            {#if sel.person != null}노란 테두리는 자동으로 넣은 얼굴입니다 (맞으면 "모두 맞음", 틀리면 골라서 "이 사람 아님").
+            {:else}다른 사람 얼굴이 섞여 있으면 골라서 "빼기"를 누르세요. 맞는 얼굴만 골라 이름을 붙여도 됩니다.{/if}
           </p>
           <div class="faces">
             {#each sel.faces as f (f.id)}
