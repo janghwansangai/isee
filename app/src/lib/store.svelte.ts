@@ -439,7 +439,7 @@ class Store {
     this.applySettings(await api.updateSettings(patch));
   }
 
-  /** 새 설정을 반영하고, 목록에 영향을 주는 값(종류·정렬·숨김·컬링 필터)이 바뀌었으면 폴더를 다시 읽는다.
+  /** 새 설정을 반영하고, 목록에 영향을 주는 값(종류·정렬·숨김·빠른 고르기 필터)이 바뀌었으면 폴더를 다시 읽는다.
    *  화면에서 바꾼 경우와 메뉴에서 바꾼 경우(settings-changed 이벤트)가 모두 여기로 온다. */
   applySettings(next: Settings) {
     const prev = this.settings;

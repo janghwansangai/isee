@@ -147,7 +147,7 @@
     outline: none;
   }
   .dialog.wide {
-    width: min(640px, calc(100vw - 32px));
+    width: min(860px, calc(100vw - 32px));
   }
   .dialog :global(h3) {
     margin: 0 0 12px;

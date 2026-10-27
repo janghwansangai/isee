@@ -119,6 +119,11 @@ impl ThumbCache {
             .unwrap_or(false)
     }
 
+    /// 메모리에만 (디스크에 남기지 않을 임시 썸네일: 내려받기 전 클라우드 파일의 작은 미리보기)
+    pub fn put_mem(&self, k: i64, t: Arc<Thumb>) {
+        self.mem.lock().put(k, t);
+    }
+
     pub fn put(&self, k: i64, t: Arc<Thumb>) {
         self.mem.lock().put(k, t.clone());
         if let Some(w) = &self.writer {

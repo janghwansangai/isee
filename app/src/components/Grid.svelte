@@ -90,7 +90,9 @@
       store.selected.clear();
       return;
     }
-    const mod = e.metaKey || e.ctrlKey;
+    // 왼쪽 위 체크 상자는 ⌘(Ctrl)-클릭과 같다: 다른 선택을 유지한 채 이것만 넣고 뺀다
+    const onCheck = !!(e.target as HTMLElement).closest("[data-check]");
+    const mod = e.metaKey || e.ctrlKey || onCheck;
     let deferSelect = false;
     if (mod) {
       if (store.selected.has(i)) store.selected.delete(i);
@@ -179,7 +181,8 @@
         role="option"
         aria-selected={store.selected.has(i)}
       >
-        <div class="thumb" class:rejected={m?.flag === -1} style="height:{cellW}px">
+        <div class="thumb" class:rejected={m?.flag === -1} class:multi={store.selected.size > 1} style="height:{cellW}px">
+          <span class="check" class:on={store.selected.has(i)} data-check title="여러 개 고르기">{store.selected.has(i) ? "✓" : ""}</span>
           {#if m?.flag}
             <span class="flag" class:pick={m.flag === 1}>{m.flag === 1 ? "✓" : "✕"}</span>
           {/if}
@@ -241,9 +244,35 @@
   .thumb.rejected img {
     opacity: 0.35;
   }
+  .check {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    z-index: 2;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    border: 1.5px solid rgba(255, 255, 255, 0.85);
+    background: rgba(0, 0, 0, 0.35);
+    color: white;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .thumb:hover .check,
+  .thumb.multi .check,
+  .check.on {
+    display: inline-flex;
+  }
+  .check.on {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
   .flag {
     position: absolute;
-    left: 5px;
+    right: 5px;
     top: 5px;
     z-index: 1;
     display: inline-flex;
@@ -294,9 +323,10 @@
     color: #9fc4ff;
     font-size: 13px;
   }
+  /* 칸을 채운다: 클라우드 미리보기(구글 드라이브 128px 등)처럼 작은 썸네일도 칸 크기로 보이게 */
   .thumb img {
-    max-width: 100%;
-    max-height: 100%;
+    width: 100%;
+    height: 100%;
     object-fit: contain;
     display: block;
   }

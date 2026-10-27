@@ -155,13 +155,13 @@
     if (ok) await trash(restAll.map((m) => m.path), "추천하지 않은 사진");
   }
 
-  /** 지우지 않고 표시만: 남길 것은 남김, 나머지는 버림 (컬링 모드에서 이어서 정리) */
+  /** 지우지 않고 표시만: 남길 것은 남김, 나머지는 버림 (빠른 고르기 모드에서 이어서 정리) */
   async function markGroups(groups: Group[]) {
     const keep = groups.flatMap((g) => g.members.filter(keepOf).map((m) => m.path));
     const rest = groups.flatMap((g) => restOf(g).map((m) => m.path));
     await store.setMarks(keep, 1);
     await store.setMarks(rest, -1);
-    store.showToast(`남김 ${keep.length}장 · 버림 ${rest.length}장으로 표시했습니다 (컬링 모드에서 확인)`, { undo: true });
+    store.showToast(`남김 ${keep.length}장 · 버림 ${rest.length}장으로 표시했습니다 (빠른 고르기 모드에서 확인)`, { undo: true });
     refreshSoon(0);
   }
 

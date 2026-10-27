@@ -30,6 +30,7 @@
   import EditorView from "./components/EditorView.svelte";
   import VideoPlayer from "./components/VideoPlayer.svelte";
   import PeopleView from "./components/PeopleView.svelte";
+  import BgPanel from "./components/BgPanel.svelte";
   import { checkForUpdate, scheduleUpdateCheck } from "./lib/update";
 
   let cols = $state(1);
@@ -40,6 +41,18 @@
   let editorView = $state<ReturnType<typeof EditorView>>();
   let peopleView = $state<ReturnType<typeof PeopleView>>();
   let stats = $state<Stats | null>(null);
+  let bgOpen = $state(false);
+  /** 백그라운드에서 뭔가 하고 있는지 (상태 표시줄 문구) */
+  let bgLabel = $derived.by(() => {
+    const b = stats?.bg;
+    if (!b) return "";
+    const parts: string[] = [];
+    if (b.thumbs) parts.push(`썸네일 ${b.thumbs.toLocaleString()}장`);
+    if (b.similar[1] && b.similar[0] < b.similar[1]) parts.push(`비슷한 사진 ${b.similar[1] - b.similar[0]}장`);
+    if (b.faces[1] && b.faces[0] < b.faces[1]) parts.push(`얼굴 ${b.faces[1] - b.faces[0]}장`);
+    if (b.paused) return parts.length ? `⏸ 멈춤 · ${parts.join(" · ")} 남음` : "⏸ 멈춤";
+    return parts.length ? `작업 중 · ${parts.join(" · ")} 남음` : "";
+  });
 
   let imageCount = $derived(store.imageIndices.length);
   let dirCount = $derived(store.entries.filter((e) => e.kind === "dir").length);
@@ -106,7 +119,7 @@
   }
 
   // 비교·비슷한 사진 화면이 덮고 있을 때 메뉴로 받아도 되는 것 (보이지 않는 그리드 선택을 지우거나 옮기지 않게)
-  const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update"]);
+  const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update", "bg_panel"]);
 
   function onMenu(id: string) {
     // 편집기에서는 실행 취소가 편집 단계를 되돌린다
@@ -171,6 +184,9 @@
         return store.openEditor();
       case "people":
         return store.openPeople();
+      case "bg_panel":
+        bgOpen = true;
+        return;
       case "check_update":
         return checkForUpdate(true);
       case "shell_install":
@@ -281,7 +297,7 @@
       markAndAdvance(flagKey, undefined);
       return;
     }
-    // 컬링 모드에서는 숫자 0~5가 별점
+    // 빠른 고르기 모드에서는 숫자 0~5가 별점
     const star = e.code.match(/^(?:Digit|Numpad)([0-5])$/);
     if (store.settings.culling && star && !mod && !e.altKey) {
       e.preventDefault();
@@ -369,7 +385,7 @@
     store.scrollTo = nf;
   }
 
-  /** 표시하고, 컬링 모드면 다음 사진으로 넘어간다 */
+  /** 표시하고, 빠른 고르기 모드면 다음 사진으로 넘어간다 */
   async function markAndAdvance(flag: number | undefined, rating: number | undefined) {
     const paths = store.imageTargets();
     if (!paths.length) return;
@@ -587,9 +603,9 @@
     {#if otherCount}<span>기타 {otherCount}개</span>{/if}
     {#if store.selected.size > 1}<span>{store.selected.size}개 선택 · {fmtSize(selSize)}</span>{/if}
     <span class="spacer"></span>
-    {#if stats && stats.pending > 0}
-      <span class="busy">썸네일 만드는 중 · {stats.pending.toLocaleString()}장 남음</span>
-    {/if}
+    <button class="bg-chip" class:busy={!!bgLabel} onclick={() => (bgOpen = !bgOpen)} title="백그라운드 작업 보기·켜기·끄기">
+      {bgLabel || "백그라운드 작업"}{stats?.bg && !stats.bg.prefill ? " · 미리 만들기 꺼짐" : ""}
+    </button>
     {#if store.settings.show_hud}
       <span class="hud">
         목록 {store.listMs.toFixed(1)}ms · 실행→첫 화면 {store.launchMs.toFixed(0)}ms
@@ -635,6 +651,10 @@
 
 {#if store.video}
   <VideoPlayer />
+{/if}
+
+{#if bgOpen}
+  <BgPanel bg={stats?.bg ?? null} onclose={() => (bgOpen = false)} />
 {/if}
 
 <Dialogs />
@@ -712,6 +732,15 @@
   }
   .spacer {
     flex: 1;
+  }
+  .bg-chip {
+    padding: 0 6px;
+    border-radius: 4px;
+    color: var(--text-faint);
+  }
+  .bg-chip:hover {
+    background: var(--hover);
+    color: var(--text);
   }
   .busy {
     color: var(--text-dim);

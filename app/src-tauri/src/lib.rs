@@ -48,6 +48,10 @@ pub struct AppState {
     pub analysis: AnalysisService,
     /// 뷰어·비교 화면이 열려 있으면 분석을 멈춘다 (보기 속도 우선)
     analysis_paused: Arc<AtomicBool>,
+    /// 뷰어·비교·편집 화면이 열려 있음
+    viewer_active: AtomicBool,
+    /// 사용자가 "백그라운드 작업 모두 멈춤"을 누름
+    user_paused: AtomicBool,
     /// 얼굴별 분류 (8단계, 선택 모듈)
     pub faces: FaceService,
     models_dir: PathBuf,
@@ -125,7 +129,7 @@ struct Listing {
     entries: Vec<Entry>,
     /// 이 폴더 사진들의 남김·버림·별점 (표시가 있는 것만, 보기 필터와 무관하게 폴더 전체)
     marks: std::collections::HashMap<String, Mark>,
-    /// 보기 필터와 무관한 폴더 전체 사진 수 (컬링 개수 표시용)
+    /// 보기 필터와 무관한 폴더 전체 사진 수 (빠른 고르기 개수 표시용)
     image_total: usize,
     ms: f64,
 }
@@ -152,7 +156,7 @@ async fn open_folder(state: State<'_, AppState>, path: String) -> CmdResult<List
     let image_total = images.len();
     drop(images);
     let mark = |p: &str| marks.get(p).copied().unwrap_or_default();
-    // 컬링 모드의 보기 필터: 남김 / 미정 / 버림 / 별점 있는 것
+    // 빠른 고르기 모드의 보기 필터: 남김 / 미정 / 버림 / 별점 있는 것
     let cull = if s.culling { s.cull_filter.as_str() } else { "all" };
     entries.retain(|e| {
         let kind_ok = match e.kind {
@@ -269,7 +273,8 @@ fn set_viewport(state: State<'_, AppState>, start: i64, end: i64) {
 #[tauri::command]
 fn set_viewer_active(state: State<'_, AppState>, active: bool) {
     state.thumbs.set_viewer_active(active);
-    state.analysis_paused.store(active, Ordering::Relaxed);
+    state.viewer_active.store(active, Ordering::Relaxed);
+    state.analysis_paused.store(active || state.user_paused.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -1169,6 +1174,61 @@ struct Stats {
     mem_hits: u64,
     disk_hits: u64,
     pending: usize,
+    /// 백그라운드 작업 현황
+    bg: BgStatus,
+}
+
+#[derive(Serialize)]
+struct BgStatus {
+    /// 모두 멈춤
+    paused: bool,
+    /// 폴더 썸네일 미리 만들기 켜짐
+    prefill: bool,
+    /// 미리 만들기 남은 수
+    thumbs: usize,
+    /// 비슷한 사진 분석 (끝난 수, 전체)
+    similar: (usize, usize),
+    /// 얼굴 분석 (끝난 수, 전체)
+    faces: (usize, usize),
+}
+
+fn bg_status(state: &AppState) -> BgStatus {
+    BgStatus {
+        paused: state.user_paused.load(Ordering::Relaxed),
+        prefill: state.settings.lock().bg_prefill,
+        thumbs: state.thumbs.background_pending(),
+        similar: state.analysis.progress(),
+        faces: state.faces.progress(),
+    }
+}
+
+/// 백그라운드 작업 조절: pause / resume (모두), prefill_on / prefill_off (썸네일 미리 만들기),
+/// stop_similar / stop_faces (지금 하는 분석 중단)
+#[tauri::command]
+fn bg_control(state: State<'_, AppState>, action: String) -> CmdResult<BgStatus> {
+    match action.as_str() {
+        "pause" | "resume" => {
+            let p = action == "pause";
+            state.user_paused.store(p, Ordering::Relaxed);
+            state.thumbs.set_paused(p);
+            state.analysis_paused.store(p || state.viewer_active.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        "prefill_on" | "prefill_off" => {
+            let on = action == "prefill_on";
+            state.thumbs.set_prefill(on);
+            let mut s = state.settings.lock();
+            s.bg_prefill = on;
+            s.save(&state.settings_path);
+        }
+        "stop_similar" => {
+            state.analysis.analyze(Vec::new());
+        }
+        "stop_faces" => {
+            state.faces.analyze(Vec::new());
+        }
+        _ => return Err(format!("알 수 없는 동작: {action}")),
+    }
+    Ok(bg_status(&state))
 }
 
 #[tauri::command]
@@ -1181,6 +1241,7 @@ fn stats(state: State<'_, AppState>) -> Stats {
         mem_hits: s.mem_hits.load(Ordering::Relaxed),
         disk_hits: s.disk_hits.load(Ordering::Relaxed),
         pending: state.thumbs.pending(),
+        bg: bg_status(&state),
     }
 }
 
@@ -1304,12 +1365,15 @@ pub fn run() {
                 .lock()
                 .take()
                 .or_else(|| std::env::args().nth(1).filter(|a| !a.starts_with('-')));
+            let state_prefill = settings.bg_prefill;
             app.manage(AppState {
                 thumbs: ThumbService::new(cache, isee_core::THUMB_PX, cores.saturating_sub(2).max(2)),
                 // 비교 화면은 최대 9장을 한꺼번에 요청하므로 4개로 동시에 준비하고 12장을 남겨 둔다
                 viewer: ViewerService::new(4, 12),
                 analysis,
                 analysis_paused,
+                viewer_active: AtomicBool::new(false),
+                user_paused: AtomicBool::new(false),
                 organize_items: Mutex::new(Vec::new()),
                 faces,
                 models_dir: data_dir.join("models"),
@@ -1326,6 +1390,10 @@ pub fn run() {
                 undo_dir,
                 ctx_menu: Mutex::new(None),
             });
+            // 사용자가 꺼 둔 썸네일 미리 만들기
+            if !state_prefill {
+                app.state::<AppState>().thumbs.set_prefill(false);
+            }
             // 파일을 더블클릭해서 앱이 켜진 경우: 화면이 뜨는 동안 디코딩을 먼저 시작
             let state = app.state::<AppState>();
             if let Some(p) = state.pending_open.lock().clone() {
@@ -1377,6 +1445,7 @@ pub fn run() {
             faces_delete_person,
             faces_clear,
             faces_organize,
+            bg_control,
             convert,
             rename_plan,
             rename_apply,

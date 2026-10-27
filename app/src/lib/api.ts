@@ -241,6 +241,15 @@ export interface Stats {
   mem_hits: number;
   disk_hits: number;
   pending: number;
+  bg: BgStatus;
+}
+
+export interface BgStatus {
+  paused: boolean;
+  prefill: boolean;
+  thumbs: number;
+  similar: [number, number];
+  faces: [number, number];
 }
 
 /** 시작 단계별 시각 (웹페이지 시작 기준 ms) */
@@ -322,6 +331,7 @@ export const api = {
     skip: string[],
     copy: boolean,
   ) => invoke<OrganizeReport>("organize_apply", { root, options, renames, skip, copy }),
+  bgControl: (action: string) => invoke<BgStatus>("bg_control", { action }),
   facesStatus: () => invoke<{ installed: boolean; download: number; analyzing: [number, number] }>("faces_status"),
   facesInstall: () => invoke("faces_install"),
   facesAnalyze: (folder: string, recursive: boolean) => invoke<[number, number]>("faces_analyze", { folder, recursive }),

@@ -48,9 +48,9 @@ pub struct Settings {
     /// 변환 결과 저장 방식: "new"(새 파일) | "overwrite"(덮어쓰기) | "folder"(지정 폴더)
     pub convert_save: String,
     pub convert_folder: Option<String>,
-    /// 컬링 모드: P 남김, X 버림, 숫자키 별점
+    /// 빠른 고르기 모드: P 남김, X 버림, 숫자키 별점
     pub culling: bool,
-    /// 컬링 모드 보기: "all" | "picked" | "unflagged" | "rejected" | "rated"
+    /// 빠른 고르기 모드 보기: "all" | "picked" | "unflagged" | "rejected" | "rated"
     pub cull_filter: String,
     /// 비슷한 사진: 묶는 정도, 추천 장수, 기준 순서
     pub similar: isee_core::similar::Options,
@@ -58,6 +58,8 @@ pub struct Settings {
     pub organize: isee_core::organize::Options,
     /// 정리할 때 복사 (기본은 이동)
     pub organize_copy: bool,
+    /// 폴더를 열면 전체 썸네일을 미리 만든다 (끄면 화면에 보이는 것만)
+    pub bg_prefill: bool,
 }
 
 impl Default for Settings {
@@ -81,6 +83,7 @@ impl Default for Settings {
             similar: Default::default(),
             organize: Default::default(),
             organize_copy: false,
+            bg_prefill: true,
         }
     }
 }

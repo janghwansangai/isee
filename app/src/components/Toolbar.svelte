@@ -100,9 +100,9 @@
       class="pill"
       class:on={store.settings.culling}
       onclick={() => store.setSettings({ culling: !store.settings.culling })}
-      title="컬링 모드: P 남김 · X 버림 · 숫자 별점"
+      title="빠른 고르기: 사진마다 P 남김 · X 버림 · 숫자 별점을 매기면 다음 사진으로 넘어갑니다. 버린 사진은 한 번에 휴지통으로."
     >
-      컬링
+      빠른 고르기
     </button>
     {#if counts}
       <select

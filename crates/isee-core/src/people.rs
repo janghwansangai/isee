@@ -15,14 +15,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// 분석에 쓰는 사진 크기 (긴 변)
-const SIZE: u32 = 1024;
+/// 분석에 쓰는 사진 크기 (긴 변). 단체 사진의 작은 얼굴도 지문을 뽑을 수 있게 크게 읽는다.
+const SIZE: u32 = 3072;
 /// 이보다 작은 얼굴(분석 크기 기준 픽셀)은 지문이 불안정해서 묶지 않는다
-pub const MIN_FACE_PX: f32 = 40.0;
-const VERSION: u32 = 1;
+pub const MIN_FACE_PX: f32 = 36.0;
+/// 분석 방식이 바뀌면 올린다 (다시 분석하되 사용자가 붙인 이름은 이어받는다)
+const VERSION: u32 = 2;
 
-/// 같은 사람으로 묶는 기준 (SFace 코사인). 실측: 0.40에서 다른 사람을 같다고 본 경우 0%
-pub const SAME: f32 = 0.40;
+/// 처음 작은 묶음을 만들 때의 기준 (엄격하게)
+const SEED: f32 = 0.50;
+/// 묶음끼리 합치는 기준: 두 묶음의 모든 얼굴 쌍 비슷함의 평균 (평균 연결)
+pub const SAME: f32 = 0.34;
 /// 이름 붙은 사람에게 자동으로 넣는 기준 (조금 더 엄격하게)
 pub const NAMED: f32 = 0.45;
 
@@ -40,6 +43,8 @@ pub struct FaceRow {
     pub person: Option<i64>,
     /// 사용자가 "이 사람 아님"이라고 한 사람
     pub not_person: Option<i64>,
+    /// 지문 품질 (정규화 전 길이, 흐리거나 가려진 얼굴일수록 작다)
+    pub q: f32,
 }
 
 pub struct FaceDb {
@@ -69,10 +74,11 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<FaceRow> {
         emb: blob_emb(&r.get::<_, Vec<u8>>(4)?),
         person: r.get(5)?,
         not_person: r.get(6)?,
+        q: r.get::<_, Option<f64>>(7)?.unwrap_or(0.0) as f32,
     })
 }
 
-const COLS: &str = "id, path, rect, px, emb, person, not_person";
+const COLS: &str = "id, path, rect, px, emb, person, not_person, quality";
 
 impl FaceDb {
     pub fn open(db_path: Option<&Path>) -> anyhow::Result<Self> {
@@ -97,6 +103,14 @@ impl FaceDb {
              CREATE INDEX IF NOT EXISTS faces_person ON faces(person);
              CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);",
         )?;
+        // 1판 DB에는 품질 칸이 없다
+        let has_quality = conn
+            .prepare("SELECT 1 FROM pragma_table_info('faces') WHERE name = 'quality'")
+            .and_then(|mut st| st.exists([]))
+            .unwrap_or(false);
+        if !has_quality {
+            conn.execute_batch("ALTER TABLE faces ADD COLUMN quality REAL;")?;
+        }
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -109,16 +123,37 @@ impl FaceDb {
             .is_some()
     }
 
-    /// 사진 한 장의 분석 결과 저장 (같은 경로의 예전 결과는 바꾼다)
-    pub fn put(&self, r: &Req, faces: &[(Face, f32, Vec<f32>)]) {
+    /// 사진 한 장의 분석 결과 저장 (같은 경로의 예전 결과는 바꾼다).
+    /// 다시 분석해도 사용자가 정한 사람·"이 사람 아님"은 같은 자리의 얼굴로 이어받는다.
+    pub fn put(&self, r: &Req, faces: &[Analyzed]) {
         let mut conn = self.conn.lock();
         let Ok(tx) = conn.transaction() else { return };
+        let old: Vec<([f32; 4], Option<i64>, Option<i64>)> = tx
+            .prepare("SELECT rect, person, not_person FROM faces WHERE path = ?1 AND (person IS NOT NULL OR not_person IS NOT NULL)")
+            .and_then(|mut st| {
+                st.query_map(params![r.path], |row| {
+                    let rect: Vec<f32> = serde_json::from_str(&row.get::<_, String>(0)?).unwrap_or_default();
+                    let rect = [0, 1, 2, 3].map(|i| rect.get(i).copied().unwrap_or(0.0));
+                    Ok((rect, row.get(1)?, row.get(2)?))
+                })?
+                .collect()
+            })
+            .unwrap_or_default();
         let _ = tx.execute("DELETE FROM faces WHERE path = ?1", params![r.path]);
         let _ = tx.execute("DELETE FROM photos WHERE path = ?1", params![r.path]);
-        for (f, px, emb) in faces {
+        for a in faces {
+            let carried = old.iter().find(|(rect, _, _)| overlap(rect, &a.face.rect) > 0.4);
             let _ = tx.execute(
-                "INSERT INTO faces (path, rect, px, emb) VALUES (?1, ?2, ?3, ?4)",
-                params![r.path, serde_json::to_string(&f.rect).unwrap_or_default(), px, emb_blob(emb)],
+                "INSERT INTO faces (path, rect, px, emb, quality, person, not_person) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    r.path,
+                    serde_json::to_string(&a.face.rect).unwrap_or_default(),
+                    a.px,
+                    emb_blob(&a.emb),
+                    a.quality,
+                    carried.and_then(|c| c.1),
+                    carried.and_then(|c| c.2)
+                ],
             );
         }
         let _ = tx.execute("INSERT OR REPLACE INTO photos (k, path, faces) VALUES (?1, ?2, ?3)", params![photo_key(r), r.path, faces.len() as i64]);
@@ -153,7 +188,7 @@ impl FaceDb {
             .map(|(id, name)| {
                 let embs: Vec<Vec<f32>> = st
                     .query_map(params![id], |r| Ok(blob_emb(&r.get::<_, Vec<u8>>(0)?)))
-                    .map(|it| it.flatten().collect())
+                    .map(|it| it.flatten().filter(|e: &Vec<f32>| !e.is_empty()).collect())
                     .unwrap_or_default();
                 let n = embs.len();
                 (id, name, mean(&embs), n)
@@ -215,6 +250,25 @@ impl FaceDb {
         self.conn.lock().execute_batch("DELETE FROM faces; DELETE FROM photos; DELETE FROM people; VACUUM;")?;
         Ok(())
     }
+}
+
+/// 분석한 얼굴 하나
+pub struct Analyzed {
+    pub face: Face,
+    /// 분석 크기에서 얼굴 짧은 변 (픽셀)
+    pub px: f32,
+    pub emb: Vec<f32>,
+    pub quality: f32,
+}
+
+/// 두 상자의 겹침 (교집합 / 합집합)
+fn overlap(a: &[f32; 4], b: &[f32; 4]) -> f32 {
+    let ix = (a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0]);
+    let iy = (a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1]);
+    if ix <= 0.0 || iy <= 0.0 {
+        return 0.0;
+    }
+    ix * iy / (a[2] * a[3] + b[2] * b[3] - ix * iy)
 }
 
 fn mean(embs: &[Vec<f32>]) -> Vec<f32> {
@@ -289,40 +343,7 @@ pub fn group(faces: Vec<FaceRow>, people: &[(i64, String, Vec<f32>, usize)], ana
             _ => rest.push(f),
         }
     }
-    // 이름 없는 얼굴 묶기: 큰 얼굴(믿을 만한 것)부터
-    rest.sort_by(|a, b| b.px.total_cmp(&a.px));
-    let mut clusters: Vec<(Vec<f32>, Vec<FaceRow>)> = Vec::new();
-    for f in rest {
-        let best = clusters
-            .iter()
-            .enumerate()
-            .map(|(i, (c, _))| (similarity_of(&f.emb, c), i))
-            .max_by(|a, b| a.0.total_cmp(&b.0));
-        match best {
-            Some((s, i)) if s >= SAME => {
-                let (c, members) = &mut clusters[i];
-                members.push(f);
-                *c = mean(&members.iter().map(|m| m.emb.clone()).collect::<Vec<_>>());
-            }
-            _ => clusters.push((f.emb.clone(), vec![f])),
-        }
-    }
-    // 가까운 묶음끼리 합치기
-    let mut merged = true;
-    while merged {
-        merged = false;
-        'outer: for i in 0..clusters.len() {
-            for j in i + 1..clusters.len() {
-                if similarity_of(&clusters[i].0, &clusters[j].0) >= SAME + 0.05 {
-                    let (_, b) = clusters.remove(j);
-                    clusters[i].1.extend(b);
-                    clusters[i].0 = mean(&clusters[i].1.iter().map(|m| m.emb.clone()).collect::<Vec<_>>());
-                    merged = true;
-                    break 'outer;
-                }
-            }
-        }
-    }
+    let clusters = average_linkage(rest);
     let make = |person: Option<i64>, name: Option<String>, list: Vec<FaceRow>, auto: usize| -> Group {
         let cover = list.iter().max_by(|a, b| a.px.total_cmp(&b.px)).map(|f| f.id).unwrap_or(0);
         let photos = list.iter().map(|f| f.path.as_str()).collect::<std::collections::HashSet<_>>().len();
@@ -335,7 +356,7 @@ pub fn group(faces: Vec<FaceRow>, people: &[(i64, String, Vec<f32>, usize)], ana
         }
     }
     let mut unnamed: Vec<Group> = Vec::new();
-    for (_, list) in clusters {
+    for list in clusters {
         if list.len() < 2 {
             report.singles += list.len();
             continue;
@@ -346,6 +367,87 @@ pub fn group(faces: Vec<FaceRow>, people: &[(i64, String, Vec<f32>, usize)], ana
     report.groups.extend(unnamed);
     report.ms = t0.elapsed().as_secs_f64() * 1000.0;
     report
+}
+
+/// 이름 없는 얼굴 묶기
+///   1) 큰 얼굴부터 차례로, 아주 비슷하면(SEED) 가장 가까운 작은 묶음에 넣는다 (사슬처럼 번지지 않게 엄격하게)
+///   2) 작은 묶음끼리 "모든 얼굴 쌍 비슷함의 평균"이 가장 높은 둘을 차례로 합친다 (SAME 이상일 때까지)
+///      평균은 지문 합의 내적으로 바로 구한다: avg(A,B) = (ΣA·ΣB) / (|A||B|)
+fn average_linkage(mut faces: Vec<FaceRow>) -> Vec<Vec<FaceRow>> {
+    faces.sort_by(|a, b| (b.px * b.q.max(1.0)).total_cmp(&(a.px * a.q.max(1.0))));
+    let mut seeds: Vec<(Vec<f32>, Vec<FaceRow>)> = Vec::new();
+    for f in faces {
+        let best = seeds.iter().enumerate().map(|(i, (c, _))| (similarity_of(&f.emb, c), i)).max_by(|a, b| a.0.total_cmp(&b.0));
+        match best {
+            Some((s, i)) if s >= SEED => {
+                let (c, m) = &mut seeds[i];
+                m.push(f);
+                *c = mean(&m.iter().map(|x| x.emb.clone()).collect::<Vec<_>>());
+            }
+            _ => seeds.push((f.emb.clone(), vec![f])),
+        }
+    }
+    // 묶음마다 지문 합과 크기
+    let mut sums: Vec<Vec<f32>> = seeds
+        .iter()
+        .map(|(_, m)| {
+            let mut s = vec![0f32; m[0].emb.len()];
+            for f in m {
+                for (a, b) in s.iter_mut().zip(&f.emb) {
+                    *a += b;
+                }
+            }
+            s
+        })
+        .collect();
+    let mut members: Vec<Option<Vec<FaceRow>>> = seeds.into_iter().map(|(_, m)| Some(m)).collect();
+    let n = members.len();
+    let size = |m: &Option<Vec<FaceRow>>| m.as_ref().map_or(0, |v| v.len()) as f32;
+    // 묶음 쌍 평균 비슷함 표
+    let mut sim = vec![f32::MIN; n * n];
+    for i in 0..n {
+        for j in i + 1..n {
+            let v = similarity_of(&sums[i], &sums[j]) / (size(&members[i]) * size(&members[j]));
+            sim[i * n + j] = v;
+            sim[j * n + i] = v;
+        }
+    }
+    loop {
+        let mut best = (SAME, usize::MAX, usize::MAX);
+        for i in 0..n {
+            if members[i].is_none() {
+                continue;
+            }
+            for j in i + 1..n {
+                if members[j].is_some() && sim[i * n + j] > best.0 {
+                    best = (sim[i * n + j], i, j);
+                }
+            }
+        }
+        let (_, i, j) = best;
+        if i == usize::MAX {
+            break;
+        }
+        // j를 i에 합치고, i와 다른 묶음의 평균 비슷함을 크기 가중으로 갱신
+        let (ni, nj) = (size(&members[i]), size(&members[j]));
+        for k in 0..n {
+            if k == i || k == j || members[k].is_none() {
+                continue;
+            }
+            let v = (ni * sim[i * n + k] + nj * sim[j * n + k]) / (ni + nj);
+            sim[i * n + k] = v;
+            sim[k * n + i] = v;
+        }
+        let moved = members[j].take().unwrap_or_default();
+        let sj = std::mem::take(&mut sums[j]);
+        for (a, b) in sums[i].iter_mut().zip(&sj) {
+            *a += b;
+        }
+        if let Some(m) = members[i].as_mut() {
+            m.extend(moved);
+        }
+    }
+    members.into_iter().flatten().collect()
 }
 
 /// 주인공 기준 이동: 가장 크게 나온 얼굴의 사람. 비슷한 크기로 여러 사람이 나오면 None("단체 사진").
@@ -465,16 +567,17 @@ impl FaceService {
     }
 }
 
-/// 사진 한 장: 얼굴 찾기 → 얼굴마다 지문
-pub fn analyze_one(models: &Models, path: &Path) -> anyhow::Result<Vec<(Face, f32, Vec<f32>)>> {
+/// 사진 한 장: 크게 읽어서 얼굴 찾기(작은 얼굴은 확대한 조각으로) → 얼굴마다 지문 (원본에 가까운 해상도에서)
+pub fn analyze_one(models: &Models, path: &Path) -> anyhow::Result<Vec<Analyzed>> {
     anyhow::ensure!(!crate::listing::is_online_only(path), "온라인 전용 파일");
     let px = decode::screen_rgba(path, SIZE)?;
     let faces = models.detect(&px)?;
     let mut out = Vec::with_capacity(faces.len());
     for f in faces {
         let side = (f.rect[2] * px.width as f32).min(f.rect[3] * px.height as f32);
-        let emb = models.fingerprint(&px, &f)?;
-        out.push((f, side, emb));
+        // 너무 작은 얼굴은 지문을 만들지 않는다 (위치만 남겨 "작은 얼굴"로 센다)
+        let (emb, quality) = if side >= MIN_FACE_PX { models.fingerprint(&px, &f)? } else { (Vec::new(), 0.0) };
+        out.push(Analyzed { face: f, px: side, emb, quality });
     }
     Ok(out)
 }
@@ -519,7 +622,7 @@ mod tests {
     use super::*;
 
     fn face(id: i64, path: &str, emb: Vec<f32>, px: f32) -> FaceRow {
-        FaceRow { id, path: path.into(), rect: [0.0; 4], px, emb: mean(&[emb]), person: None, not_person: None }
+        FaceRow { id, path: path.into(), rect: [0.0; 4], px, emb: mean(&[emb]), person: None, not_person: None, q: 1.0 }
     }
 
     #[test]
@@ -557,7 +660,7 @@ mod tests {
         let r = Req { path: "/x/a.jpg".into(), size: 10, mtime: 1, index: 0 };
         assert!(!db.analyzed(&r));
         let f = Face { rect: [0.1, 0.1, 0.2, 0.2], marks: [[0.0; 2]; 5], score: 0.9 };
-        db.put(&r, &[(f.clone(), 80.0, vec![0.6, 0.8])]);
+        db.put(&r, &[Analyzed { face: f.clone(), px: 80.0, emb: vec![0.6, 0.8], quality: 1.0 }]);
         assert!(db.analyzed(&r));
         let rows = db.faces_of(&["/x/a.jpg".into()]);
         assert_eq!(rows.len(), 1);

@@ -84,6 +84,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
             &check("show_info", "정보 패널", s.show_info)?,
             &check("show_hidden", "숨김 파일 보기", s.show_hidden)?,
             &check("show_hud", "속도 표시", s.show_hud)?,
+            &MenuItem::with_id(app, "bg_panel", "백그라운드 작업…", true, None::<&str>)?,
             &sep()?,
             &PredefinedMenuItem::fullscreen(app, Some("전체 화면"))?,
         ],
@@ -139,7 +140,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         &[
             &MenuItem::with_id(app, "edit", "사진 편집…", true, Some("CmdOrCtrl+E"))?,
             &MenuItem::with_id(app, "compare", "선택한 사진 비교", true, None::<&str>)?,
-            &check("culling", "컬링 모드 (P 남김 · X 버림 · 숫자 별점)", s.culling)?,
+            &check("culling", "빠른 고르기 모드 (P 남김 · X 버림 · 숫자 별점)", s.culling)?,
             &MenuItem::with_id(app, "trash_rejected", "버린 사진 모두 휴지통으로", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "similar", "비슷한 사진 정리…", true, Some("CmdOrCtrl+Shift+S"))?,

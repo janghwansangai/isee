@@ -1,6 +1,7 @@
 <script lang="ts">
   import { store } from "../lib/store.svelte";
   import { thumbUrl } from "../lib/api";
+  import { boxFor, drawFrame, loadFrame, type Frame } from "../lib/frames";
 
   let { paths }: { paths: string[] } = $props();
 
@@ -16,6 +17,25 @@
   // svelte-ignore state_referenced_locally
   const firstIndex = store.entries.findIndex((e) => e.path === paths[0]);
   const first = store.entries[firstIndex];
+
+  // 미리보기 칸 크기에 맞춰 디코딩한 사진 (썸네일은 작아서 흐리게 보인다)
+  let pw = $state(0);
+  let ph = $state(0);
+  let frame = $state.raw<Frame | null>(null);
+  let canvas = $state<HTMLCanvasElement>();
+  $effect(() => {
+    if (!first || !pw || !ph) return;
+    loadFrame(first.path, first.mtime, boxFor(pw, ph, window.devicePixelRatio || 1)).then((f) => (frame = f));
+  });
+  $effect(() => {
+    if (frame && canvas) drawFrame(canvas, frame);
+  });
+  /** 미리보기 칸 안에 사진 비율대로 꽉 차는 크기 */
+  let fit = $derived.by(() => {
+    const aw = frame?.fw ?? 4, ah = frame?.fh ?? 3;
+    const k = Math.min((pw - 16) / aw, (ph - 16) / ah);
+    return k > 0 ? { w: Math.round(aw * k), h: Math.round(ah * k) } : { w: 0, h: 0 };
+  });
 
   $effect(() => {
     input?.focus();
@@ -94,10 +114,14 @@
 <p class="desc">사진 {paths.length}장에 같은 글자를 넣습니다. 사진 크기가 달라도 비율로 맞춥니다.</p>
 
 <div class="layout">
-  <div class="preview">
+  <div class="preview" bind:clientWidth={pw} bind:clientHeight={ph}>
     {#if first}
-      <div class="frame" bind:clientWidth={frameW}>
-        <img src={thumbUrl(first, firstIndex)} alt="" draggable="false" />
+      <div class="frame" bind:clientWidth={frameW} style="width:{fit.w}px;height:{fit.h}px">
+        {#if frame?.bmp}
+          <canvas bind:this={canvas}></canvas>
+        {:else}
+          <img src={thumbUrl(first, firstIndex)} alt="" draggable="false" />
+        {/if}
         <span
           class="wm"
           style="{pos};font-size:{previewFont}px;opacity:{opacity / 100};color:{color};text-shadow:0 0 6px {color ===
@@ -141,7 +165,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 200px;
+    height: 420px;
     background: #141518;
     border-radius: 6px;
   }
@@ -150,9 +174,11 @@
     display: inline-block;
     line-height: 0;
   }
-  .frame img {
-    max-width: 100%;
-    max-height: 240px;
+  .frame img,
+  .frame canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
   }
   .wm {
     position: absolute;

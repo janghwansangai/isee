@@ -6,7 +6,7 @@ use crate::cache::{Thumb, ThumbCache, key_of};
 use crossbeam_channel::{Sender, unbounded};
 use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -35,6 +35,10 @@ struct State {
     generation: u64,
     viewport: (i64, i64),
     viewer_active: bool,
+    /// 폴더 전체 썸네일을 미리 만들지 (끄면 화면에 보이는 것만 만든다)
+    no_prefill: bool,
+    /// 사용자가 백그라운드 작업을 잠시 멈춤
+    paused: bool,
 }
 
 #[derive(Default)]
@@ -84,7 +88,11 @@ impl ThumbService {
                 .name(format!("thumb-lookup-{i}"))
                 .spawn(move || {
                     while let Ok((k, req, cb)) = rx.recv() {
-                        if let Some(t) = inner.cache.get_disk(k) {
+                        // 예전에 저장한 클라우드 미리보기(작은 것)는 파일을 내려받았으면 다시 만든다
+                        let stale = |t: &Thumb| {
+                            t.width.max(t.height) * 5 < inner.px * 3 && !crate::listing::is_online_only(Path::new(&req.path))
+                        };
+                        if let Some(t) = inner.cache.get_disk(k).filter(|t| !stale(t)) {
                             inner.stats.disk_hits.fetch_add(1, Ordering::Relaxed);
                             cb(Some(t));
                         } else {
@@ -131,6 +139,9 @@ impl ThumbService {
                 }
             }
             st.viewport = (0, 0);
+            if st.no_prefill {
+                return;
+            }
             st.generation
         };
         let inner = self.inner.clone();
@@ -154,6 +165,28 @@ impl ThumbService {
     pub fn set_viewport(&self, start: i64, end: i64) {
         self.inner.st.lock().viewport = (start, end);
         self.inner.cv.notify_all();
+    }
+
+    /// 폴더 전체 미리 만들기 켜기·끄기. 끄면 기다리는 요청이 없는 작업(미리 만들기)을 버린다.
+    pub fn set_prefill(&self, on: bool) {
+        let mut st = self.inner.st.lock();
+        st.no_prefill = !on;
+        if !on {
+            st.tasks.retain(|_, t| !t.waiters.is_empty());
+        }
+        drop(st);
+        self.inner.cv.notify_all();
+    }
+
+    /// 미리 만들기를 잠시 멈춤 (화면에 보이는 썸네일은 계속 만든다)
+    pub fn set_paused(&self, paused: bool) {
+        self.inner.st.lock().paused = paused;
+        self.inner.cv.notify_all();
+    }
+
+    /// 미리 만들기 대기 수 (화면이 기다리는 것 제외)
+    pub fn background_pending(&self) -> usize {
+        self.inner.st.lock().tasks.values().filter(|t| t.waiters.is_empty()).count()
     }
 
     pub fn set_viewer_active(&self, active: bool) {
@@ -187,7 +220,7 @@ fn pick(st: &State) -> Option<i64> {
     let (vs, ve) = st.viewport;
     st.tasks
         .iter()
-        .filter(|(_, t)| !st.viewer_active || !t.waiters.is_empty())
+        .filter(|(_, t)| !(st.viewer_active || st.paused) || !t.waiters.is_empty())
         .min_by_key(|(_, t)| {
             let dist = if t.index < vs {
                 vs - t.index
@@ -233,7 +266,12 @@ fn worker_loop(inner: Arc<Inner>) {
                     height: e.height,
                     mime: e.mime,
                 });
-                inner.cache.put(k, t.clone());
+                // 내려받기 전 클라우드 파일의 미리보기는 작으므로 디스크에 남기지 않는다 (내려받으면 다시 만든다)
+                if crate::listing::is_online_only(&task.path) {
+                    inner.cache.put_mem(k, t.clone());
+                } else {
+                    inner.cache.put(k, t.clone());
+                }
                 Some(t)
             }
             Err(_) => {

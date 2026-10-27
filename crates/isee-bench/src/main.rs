@@ -71,6 +71,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Some("gen-groups") => gen_groups(Path::new(args.get(2).expect("초상 사진 폴더")), Path::new(args.get(3).expect("만들 폴더"))),
         Some("faces") => faces_bench(Path::new(args.get(2).expect("모델 폴더")), Path::new(args.get(3).expect("사진 폴더"))),
         Some("place") => {
             // 좌표 → 지명 확인: isee-bench place 37.56,126.97 33.25,126.41 …
@@ -788,6 +789,63 @@ fn organize_bench(dir: &Path, big: Option<PathBuf>) -> anyhow::Result<()> {
 
 // ───────────────────────── 얼굴 ─────────────────────────
 
+/// 단체 사진 흉내: 사람마다 다른 초상 사진을 작게 줄여 큰 캔버스(4032×3024)에 6~9명 배치한다.
+/// 얼굴 크기는 사진마다 다르게 (원본 기준 약 60~160px). 정답: truth.tsv (파일, 사람, x, y, w, h)
+fn gen_groups(src: &Path, dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut by: std::collections::BTreeMap<String, Vec<PathBuf>> = Default::default();
+    for e in std::fs::read_dir(src)?.flatten() {
+        let p = e.path();
+        let name = p.file_stem().unwrap().to_string_lossy().into_owned();
+        if name == "obama_3" || !name.contains('_') {
+            continue;
+        }
+        by.entry(name.split('_').next().unwrap().to_string()).or_default().push(p);
+    }
+    let people: Vec<(String, Vec<PathBuf>)> = by.into_iter().map(|(k, mut v)| { v.sort(); (k, v) }).collect();
+    let (cw, ch) = (4032usize, 3024usize);
+    let mut truth = String::from("file\tperson\tx\ty\tw\th\n");
+    for g in 0..10u32 {
+        let r = |k: i32| hash(g as i32, k, 4242);
+        let mut canvas = vec![0u8; cw * ch * 4];
+        for (i, px) in canvas.chunks_exact_mut(4).enumerate() {
+            let v = 70 + ((i / cw) * 60 / ch) as u8;
+            px.copy_from_slice(&[v, v + 5, v + 12, 255]);
+        }
+        // 이 사진의 얼굴 크기: 초상 사진 폭 (얼굴은 폭의 약 30~40%)
+        let pw = (200.0 + r(1) * 300.0) as usize;
+        let n = 6 + (r(2) * 4.0) as usize;
+        let cols = (cw / (pw + 40)).max(1);
+        let name = format!("group_{g:02}.jpg");
+        for k in 0..n.min(cols * (ch / (pw * 5 / 4 + 40)).max(1)) {
+            // 사람·사진 고르기 (같은 사진에 같은 사람은 한 번만)
+            let pi = (g as usize * 3 + k) % people.len();
+            if k >= people.len() {
+                break;
+            }
+            let (who, files) = &people[pi];
+            let f = &files[(g as usize + k) % files.len()];
+            let p = decode::screen_rgba(f, pw as u32)?;
+            let (x0, y0) = ((k % cols) * (pw + 40) + 30, (k / cols) * (p.height as usize + 40) + 60);
+            if y0 + p.height as usize >= ch {
+                break;
+            }
+            for y in 0..p.height as usize {
+                for x in 0..p.width as usize {
+                    let s = (y * p.width as usize + x) * 4;
+                    let d = ((y0 + y) * cw + x0 + x) * 4;
+                    canvas[d..d + 4].copy_from_slice(&p.rgba[s..s + 4]);
+                }
+            }
+            truth += &format!("{name}\t{who}\t{x0}\t{y0}\t{}\t{}\n", p.width, p.height);
+        }
+        decode::imageio::write_rgbx(&dir.join(&name), &mut canvas, cw as u32, ch as u32, "public.jpeg", 0.85, true, 1)?;
+    }
+    std::fs::write(dir.join("truth.tsv"), truth)?;
+    println!("단체 사진 10장 ({})", dir.display());
+    Ok(())
+}
+
 /// 파일 이름 "사람_번호.jpg"를 정답으로 보고, 얼굴 찾기·지문 시간과 같은 사람/다른 사람 비슷함 분포를 잰다
 fn faces_bench(models: &Path, dir: &Path) -> anyhow::Result<()> {
     use std::collections::HashMap;
@@ -814,39 +872,73 @@ fn faces_bench(models: &Path, dir: &Path) -> anyhow::Result<()> {
         print!("{name:<14} 얼굴 {}", faces.len());
         if let Some(b) = big {
             let t = Instant::now();
-            let fp = m.fingerprint(&px, b)?;
+            let (fp, _) = m.fingerprint(&px, b)?;
             rec_ms += t.elapsed().as_secs_f64() * 1000.0;
             print!("  (가장 큰 얼굴 {:.0}% 점수 {:.2})", b.rect[2] * 100.0, b.score);
             prints.push((who, name, fp));
         }
         println!();
     }
-    // 모든 얼굴로 자동 묶기
+    // 모든 얼굴로 자동 묶기. 단체 사진은 truth.tsv(파일·사람·위치)로 정답을 붙인다
     {
         use isee_core::people::{FaceRow, group};
-        let mut rows = Vec::new();
-        let mut id = 0;
-        for f in &files {
-            for (face, px, emb) in isee_core::people::analyze_one(&m, f)? {
-                id += 1;
-                rows.push(FaceRow { id, path: f.to_string_lossy().into_owned(), rect: face.rect, px, emb, person: None, not_person: None });
+        let mut truth: HashMap<String, Vec<(String, [f32; 4])>> = HashMap::new();
+        if let Ok(t) = std::fs::read_to_string(dir.join("truth.tsv")) {
+            for l in t.lines().skip(1) {
+                let c: Vec<&str> = l.split('\t').collect();
+                let n = |i: usize| c[i].parse::<f32>().unwrap_or(0.0);
+                truth.entry(c[0].to_string()).or_default().push((c[1].to_string(), [n(2), n(3), n(4), n(5)]));
             }
         }
+        let truth_total: usize = truth.values().map(|v| v.len()).sum::<usize>() + files.iter().filter(|f| !truth.contains_key(&f.file_name().unwrap().to_string_lossy().into_owned())).count();
+        let mut rows = Vec::new();
+        let mut label: HashMap<i64, String> = HashMap::new();
+        let mut found_truth = std::collections::HashSet::new();
+        let mut id = 0;
+        let t = Instant::now();
+        for f in &files {
+            let fname = f.file_name().unwrap().to_string_lossy().into_owned();
+            let (iw, ih) = decode::dimensions(f).unwrap_or((1, 1));
+            for isee_core::people::Analyzed { face, px, emb, quality } in isee_core::people::analyze_one(&m, f)? {
+                id += 1;
+                let who = match truth.get(&fname) {
+                    Some(list) => {
+                        let (cx, cy) = ((face.rect[0] + face.rect[2] / 2.0) * iw as f32, (face.rect[1] + face.rect[3] / 2.0) * ih as f32);
+                        list.iter().enumerate().find(|(_, (_, r))| cx >= r[0] && cx <= r[0] + r[2] && cy >= r[1] && cy <= r[1] + r[3]).map(|(k, (w, _))| {
+                            found_truth.insert((fname.clone(), k));
+                            w.clone()
+                        })
+                    }
+                    None => {
+                        found_truth.insert((fname.clone(), usize::MAX));
+                        Some(f.file_stem().unwrap().to_string_lossy().split('_').next().unwrap_or("").to_string())
+                    }
+                };
+                if let Some(w) = who {
+                    label.insert(id, w);
+                }
+                rows.push(FaceRow { id, path: f.to_string_lossy().into_owned(), rect: face.rect, px, emb, person: None, not_person: None, q: quality });
+            }
+        }
+        let analyze_ms = t.elapsed().as_secs_f64() * 1000.0 / files.len().max(1) as f64;
+        let labeled = rows.iter().filter(|r| label.contains_key(&r.id)).count();
         let r = group(rows, &[], files.len(), files.len());
-        println!("\n자동 묶기: 묶음 {}개 · 혼자 {} · 작은 얼굴 {} · {:.1}ms", r.groups.len(), r.singles, r.small, r.ms);
+        println!("\n분석(찾기+지문) 장당 {analyze_ms:.0}ms · 정답 얼굴 {truth_total}개 중 찾음 {} ({:.0}%)", found_truth.len(), 100.0 * found_truth.len() as f64 / truth_total.max(1) as f64);
+        println!("자동 묶기: 묶음 {}개 · 혼자 {} · 작은 얼굴 {} · {:.1}ms", r.groups.len(), r.singles, r.small, r.ms);
         let (mut pure, mut total) = (0, 0);
         for g in &r.groups {
-            let names: Vec<String> = g.faces.iter().map(|f| Path::new(&f.path).file_stem().unwrap().to_string_lossy().split('_').next().unwrap_or("").to_string()).collect();
             let mut counts: HashMap<&str, usize> = HashMap::new();
-            for n in &names { *counts.entry(n.as_str()).or_default() += 1; }
-            let top = counts.values().max().copied().unwrap_or(0);
+            for f in &g.faces {
+                *counts.entry(label.get(&f.id).map(|s| s.as_str()).unwrap_or("?")).or_default() += 1;
+            }
+            let top = counts.iter().filter(|(k, _)| **k != "?").map(|(_, v)| *v).max().unwrap_or(0);
             pure += top;
-            total += names.len();
+            total += g.faces.len();
             let mut c: Vec<_> = counts.into_iter().collect();
             c.sort_by(|a, b| b.1.cmp(&a.1));
-            println!("  얼굴 {:>2}개: {:?}", names.len(), c);
+            println!("  얼굴 {:>2}개: {:?}", g.faces.len(), c);
         }
-        println!("  묶음 순도 (가장 많은 사람 비율): {:.0}%", 100.0 * pure as f64 / total.max(1) as f64);
+        println!("  묶음 순도 {:.0}% · 사람이 확인된 얼굴 {labeled}개 중 묶인 것(맞는 묶음) {pure} ({:.0}%)", 100.0 * pure as f64 / total.max(1) as f64, 100.0 * pure as f64 / labeled.max(1) as f64);
     }
     let n = files.len() as f64;
     println!("\n사진 {} 장, 얼굴 {nfaces}개 · 장당 디코딩 {:.1}ms · 얼굴 찾기 {:.1}ms · 지문 {:.1}ms(얼굴당)", files.len(), dec_ms / n, det_ms / n, rec_ms / prints.len().max(1) as f64);

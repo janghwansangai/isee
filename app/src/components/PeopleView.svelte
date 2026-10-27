@@ -60,6 +60,19 @@
     timer = window.setTimeout(refresh, ms);
   }
 
+  /** 남은 사진 수와 예상 시간 (사진 한 장 약 0.1초, 작업 3개 동시) */
+  let remaining = $derived(report ? Math.max(0, report.total - report.analyzed) : 0);
+  let estimate = $derived.by(() => {
+    const sec = Math.ceil((remaining * 0.1) / 3);
+    return sec < 60 ? `약 ${Math.max(1, sec)}초` : `약 ${Math.ceil(sec / 60)}분`;
+  });
+
+  async function stop() {
+    await api.facesStop();
+    progress = [0, 0];
+    refreshSoon(0);
+  }
+
   async function start() {
     try {
       progress = await api.facesAnalyze(folder, recursive);
@@ -84,13 +97,15 @@
       if (!alive) return;
       installed = s.installed;
       download = s.download;
-      if (s.installed) start();
+      // 분석은 저절로 시작하지 않는다: 이미 분석한 결과만 보여 주고, 남은 사진은 "분석 시작"으로
+      if (s.installed) refresh();
+      if (s.analyzing[1] && s.analyzing[0] < s.analyzing[1]) progress = s.analyzing;
     });
+    // 화면을 닫아도 분석은 이어서 한다 (멈추려면 "분석 멈춤" 또는 백그라운드 작업에서)
     return () => {
       alive = false;
       un.forEach((p) => p.then((f) => f()));
       clearTimeout(timer);
-      api.facesStop();
     };
   });
 
@@ -101,7 +116,7 @@
       firstScope = false;
       return;
     }
-    untrack(() => installed && start());
+    untrack(() => installed && refresh());
   });
 
   async function install() {
@@ -110,7 +125,7 @@
       await api.facesInstall();
       installed = true;
       store.showToast("얼굴 분류 기능을 설치했습니다");
-      await start();
+      await refresh();
     } catch (e) {
       store.showToast(`설치하지 못했습니다: ${e}`, { error: true });
     } finally {
@@ -191,7 +206,6 @@
     if (!ok) return;
     await act(() => api.facesClear());
     selKey = null;
-    start();
   }
 
   // ───── 인물별 폴더 ─────
@@ -296,6 +310,22 @@
       {/if}
     </div>
   {:else if installed}
+    {#if report && (remaining > 0 || analyzing)}
+      <div class="banner">
+        {#if analyzing}
+          <span>얼굴을 분석하고 있습니다 · {progress[0].toLocaleString()} / {progress[1].toLocaleString()}장. 사진 보기는 그대로 빠르고, 화면을 닫아도 계속합니다.</span>
+          <span class="spacer"></span>
+          <button class="btn" onclick={stop}>분석 멈춤</button>
+        {:else}
+          <span>
+            아직 분석하지 않은 사진 <b>{remaining.toLocaleString()}장</b> ({estimate} 걸립니다).
+            분석하는 동안 사진 보기는 그대로 빠르며, 뷰어를 여는 동안에는 잠시 멈춥니다.
+          </span>
+          <span class="spacer"></span>
+          <button class="btn primary" onclick={start}>분석 시작</button>
+        {/if}
+      </div>
+    {/if}
     <div class="main">
       <aside class="list">
         {#if report && !report.groups.length}
@@ -607,5 +637,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--accent-soft);
+    font-size: 13px;
   }
 </style>
