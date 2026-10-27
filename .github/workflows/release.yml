@@ -37,6 +37,30 @@ jobs:
       - name: 화면 의존성
         working-directory: app
         run: npm ci
+      # 맥: 자체 서명 인증서로 서명한다. 서명이 없으면 macOS가 폴더·구글 드라이브 접근 허용을 기억하지 못해
+      # 매번 다시 묻는다. 같은 인증서로 서명하면 업데이트 뒤에도 허용이 유지된다.
+      # (인증서에는 "iSee" 이름만 있다. 애플 공증이 아니므로 처음 실행할 때의 확인 창은 그대로다.)
+      - name: 맥 서명 인증서 준비
+        if: matrix.platform == 'macos-latest'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "::error::MACOS_CERT_P12 비밀값이 없습니다 (README의 '새 버전 내보내기' 참고)"
+            exit 1
+          fi
+          KC="$RUNNER_TEMP/isee-sign.keychain-db"
+          KC_PW=$(openssl rand -hex 16)
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "APPLE_SIGNING_IDENTITY=iSee Self Signed" >> "$GITHUB_ENV"
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -47,7 +71,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: iSee ${{ github.ref_name }}
           releaseBody: |
-            맥: dmg를 열어 iSee를 응용 프로그램 폴더로 끌어 놓으세요. 서명하지 않은 앱이라 처음에는 우클릭 › 열기로 여세요.
+            맥: dmg를 열어 iSee를 응용 프로그램 폴더로 끌어 놓으세요. 애플 공증을 받지 않은 앱이라 처음 열 때 확인 창이 뜨면 "시스템 설정 › 개인정보 보호 및 보안"에서 "그래도 열기"를 누르세요 (한 번만).
             윈도우: setup.exe를 실행하세요. SmartScreen 경고가 뜨면 "추가 정보 › 실행"을 누르세요.
           releaseDraft: true
           prerelease: false

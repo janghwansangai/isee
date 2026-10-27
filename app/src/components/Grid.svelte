@@ -6,6 +6,11 @@
 
   /** 썸네일을 만들 수 없는 파일 (종류 아이콘으로 대신) */
   const broken = new SvelteSet<string>();
+  // 다른 폴더로 가면 비운다: 다시 열었을 때 한 번 더 시도 (클라우드가 잠시 멈췄다가 살아난 경우 등)
+  $effect(() => {
+    void store.path;
+    broken.clear();
+  });
 
   let {
     cols = $bindable(1),

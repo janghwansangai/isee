@@ -14,7 +14,9 @@
 
 최신 설치 파일: **https://github.com/janghwansangai/isee-releases/releases/latest**
 
-- **맥** (애플 실리콘·인텔 모두): `iSee_…_universal.dmg`를 열고 iSee를 응용 프로그램 폴더로 끌어 놓습니다. 서명하지 않은 앱이라 처음 한 번은 Finder에서 iSee를 **우클릭 › 열기**로 엽니다.
+- **맥** (애플 실리콘·인텔 모두): `iSee_…_universal.dmg`를 열고 iSee를 응용 프로그램 폴더로 끌어 놓습니다. 애플 공증을 받지 않은 앱이라 처음 열 때 확인 창이 뜨면 **시스템 설정 › 개인정보 보호 및 보안**에서 **그래도 열기**를 누릅니다 (한 번만).
+- 맥에서 다운로드·문서 폴더나 구글 드라이브를 처음 열 때 접근을 묻는 창이 뜹니다. 한 번 허용하면 다시 묻지 않습니다 (업데이트 뒤에도).
+- 구글 드라이브에서 내려받지 않은 사진은 드라이브가 주는 작은 미리보기로 보여 줍니다. 미리보기가 안 나오면 구글 드라이브 앱이 그 계정에 정상 연결돼 있는지 확인하세요 (메뉴 막대의 드라이브 아이콘).
 - **윈도우** 10·11: `iSee_…_x64-setup.exe`를 실행합니다 (관리자 권한 필요 없음). SmartScreen 경고가 뜨면 **추가 정보 › 실행**을 누릅니다.
 - 새 버전이 나오면 앱이 실행 15초 뒤(하루 한 번) 알려 주고, 누르면 받아서 다시 시작합니다. 메뉴 iSee(윈도우는 파일) › **업데이트 확인…**으로 직접 확인할 수도 있습니다. 업데이트 파일은 서명을 확인한 뒤에만 설치합니다.
 
@@ -25,6 +27,15 @@
 3. 맥에서 `scripts/publish.sh v0.1.1` → 공개 배포 저장소(isee-releases)에 올라가고, 사용자 앱이 업데이트를 받습니다.
 
 업데이트 서명 키는 이 맥의 `~/.tauri/isee-updater.key`(비밀번호는 같은 폴더)에만 있고, 저장소에는 GitHub Secrets로만 들어 있습니다. **키를 잃어버리면 기존 사용자에게 업데이트를 보낼 수 없으니** 따로 안전하게 보관하세요.
+
+맥 앱은 자체 서명 인증서("iSee Self Signed", 개인 정보 없음)로 서명합니다. 서명이 있어야 macOS가 폴더·드라이브 접근 허용을 기억하고, 같은 인증서로 계속 서명해야 업데이트 뒤에도 다시 묻지 않습니다. 인증서는 `~/.tauri/isee-macos-codesign.*`에 있고, GitHub Secrets `MACOS_CERT_P12`(p12를 base64로), `MACOS_CERT_PASSWORD`로 등록합니다:
+
+```bash
+base64 -i ~/.tauri/isee-macos-codesign.p12 | gh secret set MACOS_CERT_P12 --repo janghwansangai/isee
+gh secret set MACOS_CERT_PASSWORD --repo janghwansangai/isee < ~/.tauri/isee-macos-codesign.password
+```
+
+애플 공증(처음 실행할 때 확인 창 없애기)은 Apple Developer Program(연 99달러) 가입이 필요합니다.
 
 ## 구조
 

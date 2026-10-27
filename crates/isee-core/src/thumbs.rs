@@ -133,6 +133,8 @@ impl ThumbService {
         let generation = {
             let mut st = self.inner.st.lock();
             st.generation += 1;
+            // 실패한 것도 폴더를 다시 열면 한 번 더 시도한다 (구글 드라이브가 멈췄다가 살아난 경우 등)
+            st.failed.clear();
             for (_, t) in st.tasks.drain() {
                 for cb in t.waiters {
                     cb(None);

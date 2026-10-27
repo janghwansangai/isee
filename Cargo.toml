@@ -4,7 +4,7 @@ members = ["crates/isee-core", "crates/isee-bench", "app/src-tauri"]
 
 [workspace.package]
 edition = "2024"
-version = "0.1.1"
+version = "0.1.2"
 
 # 디버그 빌드에서도 이미지 디코더 등 의존성은 최적화해서 속도 측정이 의미 있게 한다.
 [profile.dev.package."*"]
