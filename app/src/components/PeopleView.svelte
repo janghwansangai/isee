@@ -279,7 +279,11 @@
           <span class="bar"><span style="width:{(progress[0] / Math.max(1, progress[1])) * 100}%"></span></span>
         </span>
       {:else if report}
-        <span class="dim small">사진 {report.total.toLocaleString()}장 분석 완료</span>
+        <span class="dim small">
+          {report.analyzed >= report.total
+            ? `사진 ${report.total.toLocaleString()}장 분석 완료`
+            : `분석 ${report.analyzed.toLocaleString()} / ${report.total.toLocaleString()}장`}
+        </span>
       {/if}
     {/if}
     <span class="spacer"></span>
