@@ -2295,6 +2295,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "fast_image_resize",
+ "icu_normalizer",
  "image",
  "jpeg-encoder",
  "kamadak-exif",

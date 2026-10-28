@@ -23,6 +23,13 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("gen") => generate(Path::new(args.get(2).expect("폴더 경로"))),
+        Some("list") => {
+            // 폴더 목록 읽기 (앱이 폴더를 열 때 가장 먼저 하는 일)
+            let dir = Path::new(args.get(2).expect("폴더 경로"));
+            let (ms, n) = median_ms(30, || listing::list_dir(dir, false).map(|v| v.len()).unwrap_or(0));
+            println!("목록 {n}개: 중앙값 {ms:.2}ms (30번)");
+            Ok(())
+        }
         #[cfg(target_os = "macos")]
         Some("probe") => {
             // 한 파일의 화면 크기 처리 단계를 나눠서 측정: 디코딩만 / 디코딩+JPEG 인코딩 / 디코딩+RGBA 변환

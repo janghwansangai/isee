@@ -4,6 +4,7 @@
 
 use crate::cache::key_of;
 use crate::decode;
+use crate::listing::{nfc, nfd_variant};
 use crate::thumbs::Req;
 use parking_lot::{Condvar, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -258,8 +259,9 @@ pub struct FeatureStore {
     conn: Mutex<Connection>,
 }
 
-fn feature_key(r: &Req) -> i64 {
-    key_of(&r.path, r.size, r.mtime, 0xA1A0_0000 + VERSION)
+/// 특징값의 열쇠. path는 NFC로 맞춘 경로 (listing::nfc)
+fn feature_key(path: &str, r: &Req) -> i64 {
+    key_of(path, r.size, r.mtime, 0xA1A0_0000 + VERSION)
 }
 
 impl FeatureStore {
@@ -282,13 +284,25 @@ impl FeatureStore {
     }
 
     pub fn get(&self, r: &Req) -> Option<Features> {
+        let path = nfc(&r.path);
+        let k = feature_key(&path, r);
         let conn = self.conn.lock();
-        let data: String = conn
-            .prepare_cached("SELECT data FROM features WHERE k = ?1")
-            .ok()?
-            .query_row(params![feature_key(r)], |row| row.get(0))
-            .optional()
-            .ok()??;
+        let read = |k: i64| -> Option<String> {
+            conn.prepare_cached("SELECT data FROM features WHERE k = ?1")
+                .ok()?
+                .query_row(params![k], |row| row.get(0))
+                .optional()
+                .ok()?
+        };
+        let data = match read(k) {
+            Some(d) => d,
+            None => {
+                // 꼴을 맞추기 전(0.1.5까지) 풀어 쓴(NFD) 경로로 저장한 값이면 새 열쇠로 옮겨 둔다 (다시 분석하지 않게)
+                let d = read(feature_key(&nfd_variant(&path)?, r))?;
+                let _ = conn.execute("INSERT OR REPLACE INTO features (k, data) VALUES (?1, ?2)", params![k, d]);
+                d
+            }
+        };
         serde_json::from_str(&data).ok()
     }
 
@@ -297,7 +311,7 @@ impl FeatureStore {
         let conn = self.conn.lock();
         let _ = conn.execute(
             "INSERT OR REPLACE INTO features (k, data) VALUES (?1, ?2)",
-            params![feature_key(r), data],
+            params![feature_key(&nfc(&r.path), r), data],
         );
     }
 }
@@ -511,5 +525,26 @@ mod tests {
         let dark: Vec<f32> = a.iter().map(|v| v * 0.4).collect();
         let (sa, sd) = (sharpness(&a, w, h), sharpness(&dark, w, h));
         assert!((sa - sd).abs() / sa < 0.1, "{sa} {sd}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn features_saved_under_the_old_nfd_path_are_found() {
+        let store = FeatureStore::open(None).unwrap();
+        let composed = "/사진/세계박람회/a.jpg";
+        let old = Req { path: nfd_variant(composed).unwrap(), size: 10, mtime: 1, index: 0 };
+        let f = Features { phash: 42, ..Default::default() };
+        // 0.1.4가 폴더를 읽어서 온 NFD 경로로 저장한 값
+        store
+            .conn
+            .lock()
+            .execute("INSERT INTO features (k, data) VALUES (?1, ?2)", params![feature_key(&old.path, &old), serde_json::to_string(&f).unwrap()])
+            .unwrap();
+        let now = Req { path: composed.into(), ..old.clone() };
+        assert_eq!(store.get(&now), Some(f.clone()));
+        // 새 열쇠로 옮겨 두었다
+        let k = feature_key(composed, &now);
+        assert!(store.conn.lock().prepare("SELECT 1 FROM features WHERE k = ?1").unwrap().exists(params![k]).unwrap());
+        assert_eq!(store.get(&old), Some(f));
     }
 }

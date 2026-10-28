@@ -1,7 +1,39 @@
 use crate::formats::{Kind, kind_of};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+
+/// 맥에서는 같은 한글 이름도 두 가지 바이트로 올 수 있다: 완성형(NFC, "한")과 풀어 쓴 꼴(NFD, "ㅎㅏㄴ").
+/// 폴더를 읽으면 디스크에 저장된 꼴(구글 드라이브·Finder는 대개 NFD)이, 명령줄·설정·직접 입력한 경로는
+/// NFC가 온다. 그대로 두면 같은 사진이 두 경로로 저장돼 분석·얼굴·표시가 두 벌이 된다.
+/// 그래서 앱 안의 경로는 모두 NFC로 맞춘다. 맥 디스크(APFS)는 꼴을 가리지 않고 같은 파일을 찾는다.
+/// 윈도우(NTFS)는 꼴이 다르면 다른 파일이라 그대로 둔다. 영문만 있으면 복사하지 않고 바로 돌려준다.
+pub fn nfc(s: &str) -> Cow<'_, str> {
+    #[cfg(target_os = "macos")]
+    if !s.is_ascii() {
+        return icu_normalizer::ComposingNormalizerBorrowed::new_nfc().normalize(s);
+    }
+    Cow::Borrowed(s)
+}
+
+/// nfc와 같되, 바꿀 것이 없으면 받은 문자열을 그대로 돌려준다 (복사 없음)
+pub fn nfc_string(s: String) -> String {
+    changed(nfc(&s)).unwrap_or(s)
+}
+
+/// 꼴을 맞추기 전(0.1.5까지)에 저장했을 수 있는 다른 꼴: 전부 풀어 쓴(NFD) 경로.
+/// 폴더를 읽어서 얻은 경로가 대개 이 꼴이었다. NFC와 다를 때만 돌려준다 (맥만).
+pub fn nfd_variant(s: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    if !s.is_ascii()
+        && let Cow::Owned(d) = icu_normalizer::DecomposingNormalizerBorrowed::new_nfd().normalize(s)
+    {
+        return Some(d);
+    }
+    let _ = s;
+    None
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Entry {
@@ -74,7 +106,7 @@ pub fn cloud_drive(path: &Path) -> Option<&'static str> {
     None
 }
 
-fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
+pub(crate) fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -87,9 +119,48 @@ fn is_hidden(name: &str) -> bool {
         || name.eq_ignore_ascii_case("thumbs.db")
 }
 
+/// 바꾼 꼴이 있을 때만 Some (nfc 결과에서 복사가 일어났는지)
+fn changed(c: Cow<'_, str>) -> Option<String> {
+    match c {
+        Cow::Owned(s) => Some(s),
+        Cow::Borrowed(_) => None,
+    }
+}
+
+/// 폴더 하나를 읽으며 항목의 이름·경로를 NFC로 맞춘다 (nfc 참고).
+/// 파일 정보는 디스크에 저장된 꼴(원래 경로)로 읽는다. 꼴이 다른 경로로 찾으면 커널의 이름 캐시를 못 써서
+/// 항목마다 몇 µs씩 느려지기 때문이다 (5천 개에 +8ms). 앱에 넘기는 이름·경로만 바꾼다.
+struct NfcDir<'a> {
+    dir: &'a Path,
+    /// 폴더 경로의 꼴을 바꿨으면 바꾼 경로 (한 번만 맞춘다)
+    dir_nfc: Option<PathBuf>,
+    /// 바꾼 경로로도 열리는 디스크인가. 꼴을 가리는 드문 디스크(일부 네트워크 디스크)면 원래 꼴을 쓴다.
+    /// 폴더마다 처음 바꾼 항목에서 한 번만 확인한다.
+    ok: Option<bool>,
+}
+
+impl<'a> NfcDir<'a> {
+    fn new(dir: &'a Path) -> Self {
+        Self { dir, dir_nfc: changed(nfc(&dir.to_string_lossy())).map(PathBuf::from), ok: None }
+    }
+
+    /// 항목의 (보여 줄 이름, 앱에 넘길 경로). raw는 디스크에 저장된 꼴의 경로. 이름은 대개 영문이라 그냥 지나간다.
+    fn entry(&mut self, name: String, raw: PathBuf) -> (String, PathBuf) {
+        let name_nfc = changed(nfc(&name));
+        if self.dir_nfc.is_none() && name_nfc.is_none() {
+            return (name, raw);
+        }
+        let p = self.dir_nfc.as_deref().unwrap_or(self.dir).join(name_nfc.as_deref().unwrap_or(&name));
+        let ok = *self.ok.get_or_insert_with(|| std::fs::symlink_metadata(&p).is_ok());
+        (name_nfc.unwrap_or(name), if ok { p } else { raw })
+    }
+}
+
 /// 폴더 하나의 내용. 하위 폴더 먼저, 그다음 파일을 자연 정렬(1, 2, 10 순서)로 돌려준다.
+/// 이름과 경로는 NFC로 맞춰서 준다 (nfc 참고).
 pub fn list_dir(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
     let mut out = Vec::new();
+    let mut names = NfcDir::new(dir);
     for de in std::fs::read_dir(dir)? {
         let Ok(de) = de else { continue };
         let name = de.file_name().to_string_lossy().into_owned();
@@ -101,6 +172,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
+        let (name, path) = names.entry(name, path);
         let kind = if meta.is_dir() {
             if is_bundle(&path) {
                 Kind::Other
@@ -221,7 +293,9 @@ pub struct DirNode {
 }
 
 /// 폴더 트리용: 하위 폴더만. 하위의 하위가 있는지는 펼침 화살표 표시용으로 대충 확인한다.
+/// 이름과 경로는 list_dir처럼 NFC로 맞춘다.
 pub fn list_subdirs(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<DirNode>> {
+    let mut names = NfcDir::new(dir);
     let mut out: Vec<DirNode> = std::fs::read_dir(dir)?
         .filter_map(|de| de.ok())
         .filter_map(|de| {
@@ -235,6 +309,7 @@ pub fn list_subdirs(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<DirNod
                 return None;
             }
             let has_children = has_subdir(&path, show_hidden);
+            let (name, path) = names.entry(name, path);
             Some(DirNode {
                 name,
                 path: path.to_string_lossy().into_owned(),
@@ -295,6 +370,11 @@ pub fn places() -> Vec<Place> {
     }
     out.extend(volumes());
     out.extend(cloud_folders(home.as_deref()));
+    // 볼륨·클라우드 폴더 이름도 한글일 수 있다 (예: "SynologyDrive-동기화")
+    for p in &mut out {
+        p.name = nfc_string(std::mem::take(&mut p.name));
+        p.path = nfc_string(std::mem::take(&mut p.path));
+    }
     out
 }
 
@@ -452,5 +532,42 @@ mod tests {
         assert_eq!(c("/Users/a/Library/Mobile Documents/com~apple~CloudDocs/a"), Some("iCloud Drive"));
         assert_eq!(c("/Users/a/Dropbox/사진"), Some("Dropbox"));
         assert_eq!(c("/Users/a/Pictures/드라이브 사진"), None);
+    }
+
+    #[test]
+    fn korean_names_come_out_in_one_spelling() {
+        // 같은 글자의 두 꼴: 완성형(NFC)과 풀어 쓴 꼴(NFD, 구글 드라이브·Finder가 디스크에 쓰는 꼴)
+        let nfd = |s: &str| nfd_variant(s).unwrap_or_else(|| s.to_string());
+        assert!(matches!(nfc("IMG_0001.JPG"), Cow::Borrowed(_)), "영문은 복사하지 않음");
+        assert!(nfd_variant("IMG_0001.JPG").is_none());
+        if cfg!(target_os = "macos") {
+            assert_ne!(nfd("세계박람회"), "세계박람회");
+            assert_eq!(nfc(&nfd("세계박람회")), "세계박람회");
+        } else {
+            // 윈도우는 꼴이 다르면 다른 파일이라 바꾸지 않는다
+            let d = "\u{1109}\u{1166}"; // "세"를 풀어 쓴 꼴
+            assert_eq!(nfc(d), d);
+        }
+        let base = std::env::temp_dir().join(format!("isee-nfc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let disk_dir = base.join(nfd("학생활동"));
+        std::fs::create_dir_all(disk_dir.join(nfd("오전"))).unwrap();
+        std::fs::write(disk_dir.join(nfd("단체사진.jpg")), b"x").unwrap();
+        std::fs::write(disk_dir.join("IMG_1.jpg"), b"x").unwrap();
+        // 폴더를 읽어서 온 경로(디스크의 꼴)로 열든, 명령줄·설정에서 온 경로(NFC)로 열든 같은 이름·경로가 나온다
+        let a = list_dir(&disk_dir, false).unwrap();
+        let b = list_dir(&base.join("학생활동"), false).unwrap();
+        let names = |v: &[Entry]| v.iter().map(|e| (e.name.clone(), e.path.clone())).collect::<Vec<_>>();
+        assert_eq!(names(&a), names(&b));
+        assert_eq!(a.len(), 3);
+        for e in &a {
+            assert_eq!(nfc(&e.path), e.path.as_str());
+            assert_eq!(nfc(&e.name), e.name.as_str());
+            assert!(Path::new(&e.path).exists(), "맞춘 경로로도 열려야 함: {}", e.path);
+        }
+        let sub = list_subdirs(&disk_dir, false).unwrap();
+        assert_eq!(sub.len(), 1);
+        assert_eq!((sub[0].name.as_str(), sub[0].path.as_str()), (a[0].name.as_str(), a[0].path.as_str()));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

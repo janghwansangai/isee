@@ -153,8 +153,10 @@ struct Scope {
 }
 
 impl Scope {
+    /// 경로는 NFC로 맞춘다 (대화상자로 고른 폴더는 NFD로 올 수 있다. listing::nfc 참고)
     fn new(path: String, extra: Option<Vec<String>>, recursive: Option<bool>) -> Self {
-        let mut extra = extra.unwrap_or_default();
+        let path = listing::nfc_string(path);
+        let mut extra: Vec<String> = extra.unwrap_or_default().into_iter().map(listing::nfc_string).collect();
         extra.retain(|p| p != &path);
         extra.dedup();
         Self { path, extra, recursive: recursive.unwrap_or(false) }
@@ -218,7 +220,8 @@ async fn open_folder(
 ) -> CmdResult<Listing> {
     let t0 = Instant::now();
     let s = state.settings.lock().clone();
-    let sc = Scope::new(path.clone(), extra, recursive);
+    let sc = Scope::new(path, extra, recursive);
+    let path = sc.path.clone();
     let dir = Path::new(&path);
     let (mut entries, dirs, truncated) = scope_entries(&sc, s.show_hidden)?;
     let mut marks = scope_marks(&state, &sc);
@@ -1439,6 +1442,8 @@ fn perf_log(label: String, ms: f64) {
 static EARLY_OPEN: Mutex<Option<String>> = Mutex::new(None);
 
 fn open_path(app: &AppHandle, path: String) {
+    // 명령줄·Finder에서 온 경로도 폴더 목록과 같은 꼴(NFC)로
+    let path = listing::nfc_string(path);
     let Some(state) = app.try_state::<AppState>() else {
         *EARLY_OPEN.lock() = Some(path);
         return;
@@ -1518,6 +1523,12 @@ pub fn run() {
                 analysis_paused.clone(),
                 (cores / 4).clamp(1, 3),
             );
+            // 0.1.5까지 경로 꼴(NFC/NFD)만 달라 두 벌로 저장된 얼굴을 한 번 합친다.
+            // 사진 파일 정보를 읽어야 해서 켜는 시간을 늦추지 않게 따로 돌린다 (한 번 하면 다음부터는 바로 끝남).
+            {
+                let db = faces.db().clone();
+                std::thread::Builder::new().name("faces-merge".into()).spawn(move || db.merge_spellings())?;
+            }
             {
                 let handle = handle.clone();
                 let last = AtomicU64::new(0);
@@ -1557,7 +1568,7 @@ pub fn run() {
             let pending = EARLY_OPEN
                 .lock()
                 .take()
-                .or_else(|| std::env::args().nth(1).filter(|a| !a.starts_with('-')));
+                .or_else(|| std::env::args().nth(1).filter(|a| !a.starts_with('-')).map(listing::nfc_string));
             let state_prefill = settings.bg_prefill;
             app.manage(AppState {
                 thumbs: ThumbService::new(cache, isee_core::THUMB_PX, cores.saturating_sub(2).max(2)),

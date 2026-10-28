@@ -101,6 +101,8 @@ impl Settings {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         s.quick_folders.resize(9, None);
+        // 예전 판이 NFD로 저장했을 수 있다 (listing::nfc 참고)
+        s.last_folder = s.last_folder.map(isee_core::listing::nfc_string);
         s
     }
 

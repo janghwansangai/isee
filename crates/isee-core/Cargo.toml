@@ -25,6 +25,8 @@ zune-jpeg = "0.5.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
+# 한글 경로 표기(NFC/NFD) 맞추기. 앱(url → idna)이 이미 쓰는 것이라 새로 늘지 않는다.
+icu_normalizer = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 objc2 = "0.6.5"
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"

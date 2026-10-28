@@ -5,6 +5,7 @@
 use crate::cache::key_of;
 use crate::decode;
 use crate::faces::{Face, Models, similarity_of};
+use crate::listing::nfc;
 use crate::thumbs::Req;
 use parking_lot::{Condvar, Mutex};
 use rayon::prelude::*;
@@ -52,8 +53,9 @@ pub struct FaceDb {
     conn: Mutex<Connection>,
 }
 
-fn photo_key(r: &Req) -> i64 {
-    key_of(&r.path, r.size, r.mtime, 0xFACE_0000 + VERSION)
+/// 분석 기록의 열쇠. path는 NFC로 맞춘 경로 (listing::nfc)
+fn photo_key(path: &str, size: u64, mtime: i64) -> i64 {
+    key_of(path, size, mtime, 0xFACE_0000 + VERSION)
 }
 
 fn emb_blob(e: &[f32]) -> Vec<u8> {
@@ -126,9 +128,10 @@ impl FaceDb {
     }
 
     pub fn analyzed(&self, r: &Req) -> bool {
+        let k = photo_key(&nfc(&r.path), r.size, r.mtime);
         let conn = self.conn.lock();
         conn.prepare_cached("SELECT 1 FROM photos WHERE k = ?1")
-            .and_then(|mut s| s.query_row(params![photo_key(r)], |_| Ok(())).optional())
+            .and_then(|mut s| s.query_row(params![k], |_| Ok(())).optional())
             .ok()
             .flatten()
             .is_some()
@@ -137,12 +140,13 @@ impl FaceDb {
     /// 사진 한 장의 분석 결과 저장 (같은 경로의 예전 결과는 바꾼다).
     /// 다시 분석해도 사용자가 정한 사람·"이 사람 아님"은 같은 자리의 얼굴로 이어받는다.
     pub fn put(&self, r: &Req, faces: &[Analyzed]) {
+        let path = nfc(&r.path);
         let mut conn = self.conn.lock();
         let Ok(tx) = conn.transaction() else { return };
         let old: Vec<(i64, [f32; 4], Option<i64>, Option<i64>)> = tx
             .prepare("SELECT id, rect, person, not_person FROM faces WHERE path = ?1")
             .and_then(|mut st| {
-                st.query_map(params![r.path], |row| {
+                st.query_map(params![path], |row| {
                     let rect: Vec<f32> = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
                     let rect = [0, 1, 2, 3].map(|i| rect.get(i).copied().unwrap_or(0.0));
                     Ok((row.get(0)?, rect, row.get(2)?, row.get(3)?))
@@ -150,8 +154,8 @@ impl FaceDb {
                 .collect()
             })
             .unwrap_or_default();
-        let _ = tx.execute("DELETE FROM faces WHERE path = ?1", params![r.path]);
-        let _ = tx.execute("DELETE FROM photos WHERE path = ?1", params![r.path]);
+        let _ = tx.execute("DELETE FROM faces WHERE path = ?1", params![path]);
+        let _ = tx.execute("DELETE FROM photos WHERE path = ?1", params![path]);
         for a in faces {
             let same = |o: &&(i64, [f32; 4], Option<i64>, Option<i64>)| overlap(&o.1, &a.face.rect) > 0.4;
             let carried = old.iter().filter(|o| o.2.is_some() || o.3.is_some()).find(same).map(|o| (o.1, o.2, o.3));
@@ -159,7 +163,7 @@ impl FaceDb {
             let _ = tx.execute(
                 "INSERT INTO faces (path, rect, px, emb, quality, person, not_person, crop) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
-                    r.path,
+                    path,
                     serde_json::to_string(&a.face.rect).unwrap_or_default(),
                     a.px,
                     emb_blob(&a.emb),
@@ -180,7 +184,8 @@ impl FaceDb {
         for o in &old {
             let _ = tx.execute("DELETE FROM apart WHERE a = ?1 OR b = ?1", params![o.0]);
         }
-        let _ = tx.execute("INSERT OR REPLACE INTO photos (k, path, faces) VALUES (?1, ?2, ?3)", params![photo_key(r), r.path, faces.len() as i64]);
+        let k = photo_key(&path, r.size, r.mtime);
+        let _ = tx.execute("INSERT OR REPLACE INTO photos (k, path, faces) VALUES (?1, ?2, ?3)", params![k, path, faces.len() as i64]);
         let _ = tx.commit();
     }
 
@@ -190,7 +195,7 @@ impl FaceDb {
         let Ok(mut st) = conn.prepare_cached(&format!("SELECT {COLS} FROM faces WHERE path = ?1")) else { return Vec::new() };
         paths
             .iter()
-            .flat_map(|p| st.query_map(params![p], row).map(|it| it.flatten().collect::<Vec<_>>()).unwrap_or_default())
+            .flat_map(|p| st.query_map(params![nfc(p)], row).map(|it| it.flatten().collect::<Vec<_>>()).unwrap_or_default())
             .collect()
     }
 
@@ -310,9 +315,31 @@ impl FaceDb {
 
     /// 앱이 파일을 옮기거나 이름을 바꾸면 얼굴도 따라간다
     pub fn rename(&self, from: &str, to: &str) {
+        let (from, to) = (nfc(from), nfc(to));
         let conn = self.conn.lock();
         let _ = conn.execute("UPDATE faces SET path = ?2 WHERE path = ?1", params![from, to]);
         let _ = conn.execute("UPDATE photos SET path = ?2 WHERE path = ?1", params![from, to]);
+    }
+
+    /// 0.1.5까지는 같은 사진이 경로의 꼴(NFC/NFD, listing::nfc 참고)만 다르게 두 벌 저장될 수 있었다.
+    /// 경로를 NFC로 바꾸고 겹친 사진은 한 벌로 합친다. 이름·"이 사람 아님"이 많은 쪽을 남기고, 다른 쪽에만 있는
+    /// 이름·얼굴 썸네일·"빼기" 쌍은 남기는 쪽의 같은 자리 얼굴로 옮긴다. 이름 붙은 얼굴은 버리지 않는다.
+    /// 분석 기록(photos)의 열쇠는 경로로 만든 값이라, 파일 크기·수정 시각을 다시 읽어 새 열쇠로 바꾼다
+    /// (파일 정보만 읽으므로 클라우드 파일도 내려받지 않는다). 한 번만 한다 (DB의 user_version에 적어 둠).
+    /// 돌려주는 값: 고친 사진 수
+    pub fn merge_spellings(&self) -> usize {
+        let mut conn = self.conn.lock();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+        if version >= 1 {
+            return 0;
+        }
+        let Ok(tx) = conn.transaction() else { return 0 };
+        // 중간에 실패하면 아무것도 바꾸지 않고 다음에 다시 한다
+        let Ok(n) = merge_spellings_in(&tx) else { return 0 };
+        if tx.execute_batch("PRAGMA user_version = 1").is_err() || tx.commit().is_err() {
+            return 0;
+        }
+        n
     }
 
     /// 얼굴 데이터와 이름 전부 지우기
@@ -320,6 +347,115 @@ impl FaceDb {
         self.conn.lock().execute_batch("DELETE FROM faces; DELETE FROM photos; DELETE FROM people; DELETE FROM apart; VACUUM;")?;
         Ok(())
     }
+}
+
+/// merge_spellings에서 쓰는 얼굴 정보
+struct Spelled {
+    id: i64,
+    rect: [f32; 4],
+    person: Option<i64>,
+    not_person: Option<i64>,
+    crop: bool,
+}
+
+impl Spelled {
+    fn named(&self) -> bool {
+        self.person.is_some() || self.not_person.is_some()
+    }
+}
+
+fn merge_spellings_in(tx: &rusqlite::Transaction) -> rusqlite::Result<usize> {
+    // NFC 경로마다 다른 꼴의 경로들
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let mut st = tx.prepare("SELECT path FROM faces UNION SELECT path FROM photos")?;
+        for p in st.query_map([], |r| r.get::<_, String>(0))? {
+            let p = p?;
+            let n = nfc(&p).into_owned();
+            if n != p {
+                groups.entry(n).or_default().push(p);
+            }
+        }
+    }
+    let load = |path: &str| -> rusqlite::Result<Vec<Spelled>> {
+        let mut st = tx.prepare_cached("SELECT id, rect, person, not_person, crop IS NOT NULL FROM faces WHERE path = ?1")?;
+        st.query_map(params![path], |r| {
+            let rect: Vec<f32> = serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default();
+            Ok(Spelled {
+                id: r.get(0)?,
+                rect: [0, 1, 2, 3].map(|i| rect.get(i).copied().unwrap_or(0.0)),
+                person: r.get(2)?,
+                not_person: r.get(3)?,
+                crop: r.get(4)?,
+            })
+        })?
+        .collect()
+    };
+    let n = groups.len();
+    for (path, mut spellings) in groups {
+        // 이미 NFC 경로로도 저장돼 있으면 그것도 한 꼴로 본다
+        if tx.prepare_cached("SELECT 1 FROM faces WHERE path = ?1 UNION ALL SELECT 1 FROM photos WHERE path = ?1")?.exists(params![path])? {
+            spellings.push(path.clone());
+        }
+        let mut sets: Vec<Vec<Spelled>> = spellings.iter().map(|p| load(p)).collect::<rusqlite::Result<_>>()?;
+        // 남길 꼴: 이름 붙은 얼굴 → 얼굴 썸네일 → 얼굴 수가 많은 쪽, 같으면 이미 NFC인 쪽
+        let keep = (0..sets.len())
+            .max_by_key(|&i| {
+                let s = &sets[i];
+                (s.iter().filter(|f| f.named()).count(), s.iter().filter(|f| f.crop).count(), s.len(), spellings[i] == path)
+            })
+            .unwrap_or(0);
+        let mut kept = std::mem::take(&mut sets[keep]);
+        for f in sets.into_iter().flatten() {
+            let same = kept
+                .iter_mut()
+                .map(|g| (overlap(&g.rect, &f.rect), g))
+                .filter(|(o, _)| *o > 0.4)
+                .max_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, g)| g);
+            let Some(g) = same else {
+                // 남길 쪽에 없는 얼굴: 이름이 붙어 있으면 버리지 않고 옮긴다
+                if f.named() {
+                    tx.execute("UPDATE faces SET path = ?2 WHERE id = ?1", params![f.id, path])?;
+                } else {
+                    tx.execute("DELETE FROM faces WHERE id = ?1", params![f.id])?;
+                    tx.execute("DELETE FROM apart WHERE a = ?1 OR b = ?1", params![f.id])?;
+                }
+                continue;
+            };
+            if !g.named() && f.named() {
+                tx.execute("UPDATE faces SET person = ?2, not_person = ?3 WHERE id = ?1", params![g.id, f.person, f.not_person])?;
+                (g.person, g.not_person) = (f.person, f.not_person);
+            }
+            if !g.crop && f.crop {
+                tx.execute("UPDATE faces SET crop = (SELECT crop FROM faces WHERE id = ?2) WHERE id = ?1", params![g.id, f.id])?;
+                g.crop = true;
+            }
+            tx.execute("UPDATE OR IGNORE apart SET a = ?2 WHERE a = ?1", params![f.id, g.id])?;
+            tx.execute("UPDATE OR IGNORE apart SET b = ?2 WHERE b = ?1", params![f.id, g.id])?;
+            tx.execute("DELETE FROM apart WHERE a = ?1 OR b = ?1 OR a = b", params![f.id])?;
+            tx.execute("DELETE FROM faces WHERE id = ?1", params![f.id])?;
+        }
+        tx.execute("UPDATE faces SET path = ?2 WHERE path = ?1", params![spellings[keep], path])?;
+        // 분석 기록: 남긴 쪽의 기록이 지금 파일과 맞을 때만 새 열쇠로 옮긴다. 아니면 지워서 다음에 다시 분석한다
+        // (다시 분석해도 이름은 같은 자리 얼굴로 이어받는다).
+        let old_k: Option<i64> =
+            tx.query_row("SELECT k FROM photos WHERE path = ?1", params![spellings[keep]], |r| r.get(0)).optional()?;
+        let fresh = std::fs::metadata(&path)
+            .ok()
+            .map(|m| (m.len(), crate::listing::mtime_ms(&m)))
+            .filter(|&(size, mtime)| old_k == Some(photo_key(&spellings[keep], size, mtime)));
+        for p in &spellings {
+            tx.execute("DELETE FROM photos WHERE path = ?1", params![p])?;
+        }
+        if let Some((size, mtime)) = fresh {
+            tx.execute(
+                "INSERT OR REPLACE INTO photos (k, path, faces) VALUES (?1, ?2, (SELECT COUNT(*) FROM faces WHERE path = ?2))",
+                params![photo_key(&path, size, mtime), path],
+            )?;
+        }
+    }
+    Ok(n)
 }
 
 /// 분석한 얼굴 하나
@@ -1051,5 +1187,73 @@ mod tests {
         crops.request(-1, Box::new(move |b| tx.send(b).unwrap()));
         assert_eq!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nfd_and_nfc_spellings_merge_into_one_photo() {
+        let dir = std::env::temp_dir().join(format!("isee-spell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("세계박람회.jpg");
+        std::fs::write(&file, b"photo").unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        let (size, mtime) = (meta.len(), crate::listing::mtime_ms(&meta));
+        let composed = file.to_string_lossy().into_owned();
+        let decomposed = crate::listing::nfd_variant(&composed).unwrap();
+        let req = |path: &str| Req { path: path.into(), size, mtime, index: 0 };
+        let db = FaceDb::open(None).unwrap();
+        let p = db.create_person("민준").unwrap();
+        // 0.1.4가 저장한 모양: 같은 사진이 두 꼴로 두 벌.
+        // NFD 쪽에 이름이 더 많고, NFC 쪽에만 얼굴 썸네일·"빼기" 쌍·이름 붙은 다른 얼굴이 있다.
+        {
+            let conn = db.conn.lock();
+            let add = |path: &str, x: f32, person: Option<i64>, not_person: Option<i64>, crop: Option<Vec<u8>>| {
+                conn.execute(
+                    "INSERT INTO faces (path, rect, px, emb, person, not_person, crop) VALUES (?1, ?2, 80, ?3, ?4, ?5, ?6)",
+                    params![path, serde_json::to_string(&[x, 0.2, 0.1, 0.1]).unwrap(), emb_blob(&[1.0, 0.0]), person, not_person, crop],
+                )
+                .unwrap();
+                conn.last_insert_rowid()
+            };
+            add(&decomposed, 0.1, Some(p), None, None);
+            add(&decomposed, 0.5, None, Some(p), None);
+            add(&composed, 0.1, None, None, Some(vec![7]));
+            let apart = add(&composed, 0.5, None, None, None);
+            add(&composed, 0.8, Some(p), None, None);
+            conn.execute("INSERT INTO apart (a, b) VALUES (?1, 999)", params![apart]).unwrap();
+            for (path, n) in [(&decomposed, 2), (&composed, 3)] {
+                conn.execute("INSERT INTO photos (k, path, faces) VALUES (?1, ?2, ?3)", params![photo_key(path, size, mtime), path, n])
+                    .unwrap();
+            }
+        }
+        assert_eq!(db.merge_spellings(), 1);
+        // 어느 꼴로 물어도 같은 사진 한 장
+        let rows = db.faces_of(std::slice::from_ref(&decomposed));
+        let ids = |v: &[FaceRow]| v.iter().map(|f| f.id).collect::<Vec<_>>();
+        assert_eq!(ids(&rows), ids(&db.faces_of(std::slice::from_ref(&composed))));
+        assert_eq!(rows.len(), 3, "두 벌이 한 벌로, 이름 붙은 얼굴은 남긴다: {rows:?}");
+        assert!(rows.iter().all(|f| f.path == composed));
+        let at = |x: f32| rows.iter().find(|f| (f.rect[0] - x).abs() < 1e-6).unwrap();
+        assert_eq!(at(0.1).person, Some(p));
+        assert_eq!(at(0.5).not_person, Some(p));
+        assert_eq!(at(0.8).person, Some(p));
+        assert_eq!(db.crop(at(0.1).id), Some(vec![7]), "다른 꼴에만 있던 썸네일을 옮김");
+        assert_eq!(db.apart_pairs(), vec![(at(0.5).id, 999)], "\"빼기\" 쌍도 옮김");
+        assert!(db.analyzed(&req(&decomposed)) && db.analyzed(&req(&composed)), "다시 분석하지 않음");
+        let photos: i64 = db.conn.lock().query_row("SELECT COUNT(*) FROM photos", [], |r| r.get(0)).unwrap();
+        assert_eq!(photos, 1);
+        assert_eq!(db.people()[0].3, 2);
+        // 한 번만 한다
+        assert_eq!(db.merge_spellings(), 0);
+        // 이후로는 NFD 경로로 저장해도 같은 한 벌 (이름은 같은 자리 얼굴로 이어받음)
+        let f = Face { rect: [0.1, 0.2, 0.1, 0.1], marks: [[0.0; 2]; 5], score: 0.9 };
+        db.put(&req(&decomposed), &[Analyzed { face: f, px: 80.0, emb: vec![1.0, 0.0], quality: 1.0, crop: None }]);
+        let again = db.faces_of(std::slice::from_ref(&composed));
+        assert_eq!(again.len(), 1);
+        assert_eq!((again[0].path.as_str(), again[0].person), (composed.as_str(), Some(p)));
+        db.rename(&decomposed, &format!("{}/새 이름.jpg", dir.to_string_lossy()));
+        assert_eq!(db.faces_of(&[format!("{}/새 이름.jpg", dir.to_string_lossy())]).len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

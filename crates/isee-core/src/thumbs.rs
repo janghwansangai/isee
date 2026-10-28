@@ -58,6 +58,15 @@ struct Inner {
     stats: Stats,
 }
 
+/// 경로의 꼴을 맞추기 전(0.1.5까지) 풀어 쓴(NFD) 경로로 저장한 썸네일이면 새 열쇠로 옮겨 둔다
+/// (다시 만들지 않게). 디스크에 없을 때만, 한글 등이 든 경로만 한 번 더 찾아본다.
+fn legacy_disk(inner: &Inner, k: i64, req: &Req) -> Option<Arc<Thumb>> {
+    let old = crate::listing::nfd_variant(&req.path)?;
+    let t = inner.cache.get_disk(key_of(&old, req.size, req.mtime, inner.px))?;
+    inner.cache.put(k, t.clone());
+    Some(t)
+}
+
 pub struct ThumbService {
     inner: Arc<Inner>,
     lookup_tx: Sender<(i64, Req, Callback)>,
@@ -92,7 +101,7 @@ impl ThumbService {
                         let stale = |t: &Thumb| {
                             t.width.max(t.height) * 5 < inner.px * 3 && !crate::listing::is_online_only(Path::new(&req.path))
                         };
-                        if let Some(t) = inner.cache.get_disk(k).filter(|t| !stale(t)) {
+                        if let Some(t) = inner.cache.get_disk(k).or_else(|| legacy_disk(&inner, k, &req)).filter(|t| !stale(t)) {
                             inner.stats.disk_hits.fetch_add(1, Ordering::Relaxed);
                             cb(Some(t));
                         } else {
@@ -155,7 +164,7 @@ impl ThumbService {
                         return; // 그사이 또 다른 폴더로 옮겨 감
                     }
                     let k = key_of(&req.path, req.size, req.mtime, inner.px);
-                    if inner.cache.get_mem(k).is_some() || inner.cache.on_disk(k) {
+                    if inner.cache.get_mem(k).is_some() || inner.cache.on_disk(k) || legacy_disk(&inner, k, &req).is_some() {
                         continue;
                     }
                     enqueue(&inner, k, req, None);
@@ -295,5 +304,49 @@ fn worker_loop(inner: Arc<Inner>) {
         for cb in task.waiters.into_iter().chain(late) {
             cb(thumb.clone());
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumbnails_saved_under_the_old_nfd_path_are_reused() {
+        let db = std::env::temp_dir().join(format!("isee-thumbs-nfc-{}.db", std::process::id()));
+        let clean = || {
+            for ext in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{ext}", db.to_string_lossy()));
+            }
+        };
+        clean();
+        // 없는 파일이라 새로 만들려고 하면 실패한다. 예전 썸네일을 찾아야만 받을 수 있다.
+        let composed = "/없는 폴더/세계박람회/a.jpg";
+        let req = Req { path: composed.into(), size: 10, mtime: 1, index: 0 };
+        let old_k = key_of(&crate::listing::nfd_variant(composed).unwrap(), 10, 1, 400);
+        {
+            let cache = ThumbCache::open(Some(&db), 10).unwrap();
+            cache.put(old_k, Arc::new(Thumb { bytes: vec![1, 2, 3], width: 400, height: 300, mime: "image/jpeg" }));
+            let t0 = Instant::now();
+            while !cache.on_disk(old_k) {
+                assert!(t0.elapsed() < Duration::from_secs(10));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let svc = ThumbService::new(ThumbCache::open(Some(&db), 10).unwrap(), 400, 1);
+        let (tx, rx) = std::sync::mpsc::channel();
+        svc.request(req.clone(), Box::new(move |t| tx.send(t).unwrap()));
+        let t = rx.recv_timeout(Duration::from_secs(10)).unwrap().expect("예전 썸네일");
+        assert_eq!(t.bytes, vec![1, 2, 3]);
+        assert_eq!(svc.stats().generated.load(Ordering::Relaxed), 0);
+        // 새 열쇠로 옮겨 두었다
+        let k = svc.key(composed, 10, 1);
+        let t0 = Instant::now();
+        while !svc.inner.cache.on_disk(k) {
+            assert!(t0.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(svc);
+        clean();
     }
 }
