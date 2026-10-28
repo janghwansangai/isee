@@ -4,13 +4,13 @@
 
 use crate::cache::key_of;
 use crate::decode;
-use crate::faces::{Face, Models, similarity_of};
+use crate::faces::{Face, Models, similarity_of, turn_of};
 use crate::listing::nfc;
 use crate::thumbs::Req;
 use parking_lot::{Condvar, Mutex};
 use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
@@ -24,12 +24,74 @@ pub const MIN_FACE_PX: f32 = 36.0;
 /// 분석 방식이 바뀌면 올린다 (다시 분석하되 사용자가 붙인 이름은 이어받는다)
 const VERSION: u32 = 2;
 
-/// 처음 작은 묶음을 만들 때의 기준 (엄격하게)
-const SEED: f32 = 0.50;
-/// 묶음끼리 합치는 기준: 두 묶음의 모든 얼굴 쌍 비슷함의 평균 (평균 연결)
-pub const SAME: f32 = 0.34;
-/// 이름 붙은 사람에게 자동으로 넣는 기준 (조금 더 엄격하게)
-pub const NAMED: f32 = 0.45;
+/// 같은 사람으로 묶는 엄격함 (인물 화면의 "정확도"). 엄격할수록 다른 사람이 섞이는 일이 줄고,
+/// 대신 같은 사람이 여러 묶음으로 나뉘거나 미분류로 남는 얼굴이 늘어난다. 묶을 때만 쓰므로 바꿔도 다시 분석하지 않는다.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Accuracy {
+    /// 느슨하게: 같은 사람을 더 많이 묶는다
+    Low,
+    #[default]
+    Normal,
+    /// 엄격하게: 확실한 얼굴만 묶는다
+    High,
+}
+
+/// 묶는 기준값
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    /// 처음 작은 묶음을 만들 때 (사슬처럼 번지지 않게 엄격하게)
+    seed: f32,
+    /// 묶음끼리 합칠 때: 두 묶음의 모든 얼굴 쌍 비슷함의 평균 (평균 연결)
+    same: f32,
+    /// 이름 붙은 사람에게 자동으로 넣을 때, 그리고 두 번째 후보보다 이만큼 뚜렷해야 함
+    named: f32,
+    margin: f32,
+}
+
+impl Accuracy {
+    /// 사용자가 이름을 붙인 얼굴(학생 10명, 56개)과 "이 사람 아님"(32개)으로 맞춘 값 (isee-bench face-levels).
+    /// 보통 → 높음: "아님"이라고 한 얼굴이 그 사람에게 다시 자동으로 들어가는 일 14 → 3, 묶을 때 섞임 10 → 4,
+    /// 대신 같은 사람 얼굴끼리 묶이는 비율 92% → 82%, 미분류 19 → 37개. 흐린 얼굴을 빼는 것은 섞임을 줄이지 못해 쓰지 않는다.
+    fn limits(self) -> Limits {
+        match self {
+            Accuracy::Low => Limits { seed: 0.46, same: 0.30, named: 0.41, margin: 0.06 },
+            Accuracy::Normal => Limits { seed: 0.50, same: 0.34, named: 0.45, margin: 0.08 },
+            Accuracy::High => Limits { seed: 0.55, same: 0.40, named: 0.52, margin: 0.10 },
+        }
+    }
+}
+
+/// 옆모습을 얼마나 묶을지 (인물 화면의 "옆모습"). 옆모습은 지문이 불안정해 다른 사람과 섞이기 쉽다.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Profile {
+    /// 옆모습도 묶는다
+    #[default]
+    All,
+    /// 많이 돌린 얼굴(옆모습)은 미분류로
+    Half,
+    /// 정면에 가까운 얼굴만 묶는다
+    Front,
+}
+
+impl Profile {
+    /// 묶을 얼굴의 최대 돌린 정도 (faces::turn_of)
+    fn max_turn(self) -> Option<f32> {
+        match self {
+            Profile::All => None,
+            Profile::Half => Some(0.6),
+            Profile::Front => Some(0.35),
+        }
+    }
+}
+
+/// 묶는 방식 (설정에서 고른다)
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    pub accuracy: Accuracy,
+    pub profile: Profile,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FaceRow {
@@ -47,6 +109,9 @@ pub struct FaceRow {
     pub not_person: Option<i64>,
     /// 지문 품질 (정규화 전 길이, 흐리거나 가려진 얼굴일수록 작다)
     pub q: f32,
+    /// 얼굴이 옆으로 돌아간 정도 (faces::turn_of). 0.1.6 전에 분석한 얼굴은 없음.
+    #[serde(skip)]
+    pub turn: Option<f32>,
 }
 
 pub struct FaceDb {
@@ -78,10 +143,11 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<FaceRow> {
         person: r.get(5)?,
         not_person: r.get(6)?,
         q: r.get::<_, Option<f64>>(7)?.unwrap_or(0.0) as f32,
+        turn: r.get::<_, Option<f64>>(8)?.map(|t| t as f32),
     })
 }
 
-const COLS: &str = "id, path, rect, px, emb, person, not_person, quality";
+const COLS: &str = "id, path, rect, px, emb, person, not_person, quality, turn";
 
 impl FaceDb {
     pub fn open(db_path: Option<&Path>) -> anyhow::Result<Self> {
@@ -124,6 +190,14 @@ impl FaceDb {
         if !has_crop {
             conn.execute_batch("ALTER TABLE faces ADD COLUMN crop BLOB;")?;
         }
+        // 0.1.6부터 얼굴이 돌아간 정도를 함께 저장한다 (옆모습 빼기). 그 전에 분석한 얼굴은 다시 분석하면 생긴다.
+        let has_turn = conn
+            .prepare("SELECT 1 FROM pragma_table_info('faces') WHERE name = 'turn'")
+            .and_then(|mut st| st.exists([]))
+            .unwrap_or(false);
+        if !has_turn {
+            conn.execute_batch("ALTER TABLE faces ADD COLUMN turn REAL;")?;
+        }
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -161,7 +235,7 @@ impl FaceDb {
             let carried = old.iter().filter(|o| o.2.is_some() || o.3.is_some()).find(same).map(|o| (o.1, o.2, o.3));
             let prev = old.iter().find(same).map(|o| o.0);
             let _ = tx.execute(
-                "INSERT INTO faces (path, rect, px, emb, quality, person, not_person, crop) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO faces (path, rect, px, emb, quality, person, not_person, crop, turn) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     path,
                     serde_json::to_string(&a.face.rect).unwrap_or_default(),
@@ -170,7 +244,8 @@ impl FaceDb {
                     a.quality,
                     carried.and_then(|c| c.1),
                     carried.and_then(|c| c.2),
-                    a.crop
+                    a.crop,
+                    a.turn
                 ],
             );
             // "빼기"한 쌍도 새 번호로 옮긴다
@@ -216,6 +291,29 @@ impl FaceDb {
             let _ = tx.execute("UPDATE faces SET crop = ?2 WHERE id = ?1", params![id, b]);
         }
         let _ = tx.commit();
+    }
+
+    /// 얼굴이 돌아간 정도를 모르는(0.1.6 전에 분석한) 사진을 "분석 안 함"으로 되돌린다.
+    /// 다시 분석하면 방향이 생기고, 사용자가 붙인 이름은 같은 자리 얼굴로 이어받는다.
+    /// 클라우드에만 있는 사진은 다시 분석할 수 없으므로(내려받지 않음) 그대로 둔다. 돌려주는 값: 되돌린 사진 수
+    pub fn forget_without_turn(&self, paths: &[String]) -> usize {
+        let conn = self.conn.lock();
+        let Ok(mut st) = conn.prepare_cached("SELECT 1 FROM faces WHERE path = ?1 AND turn IS NULL AND px >= ?2 LIMIT 1") else { return 0 };
+        let mut n = 0;
+        for p in paths {
+            let p = nfc(p);
+            if st.exists(params![p, MIN_FACE_PX]).unwrap_or(false) && !crate::listing::is_online_only(Path::new(p.as_ref())) {
+                n += conn.execute("DELETE FROM photos WHERE path = ?1", params![p]).unwrap_or(0).min(1);
+            }
+        }
+        n
+    }
+
+    /// 저장된 얼굴 전부 (측정 도구용)
+    pub fn all_faces(&self) -> Vec<FaceRow> {
+        let conn = self.conn.lock();
+        let Ok(mut st) = conn.prepare(&format!("SELECT {COLS} FROM faces")) else { return Vec::new() };
+        st.query_map([], row).map(|it| it.flatten().collect()).unwrap_or_default()
     }
 
     pub fn face(&self, id: i64) -> Option<FaceRow> {
@@ -467,6 +565,8 @@ pub struct Analyzed {
     pub quality: f32,
     /// 인물 화면용 얼굴 썸네일 (JPEG). 너무 작은 얼굴은 없음.
     pub crop: Option<Vec<u8>>,
+    /// 얼굴이 옆으로 돌아간 정도 (faces::turn_of)
+    pub turn: Option<f32>,
 }
 
 /// 두 상자의 겹침 (교집합 / 합집합)
@@ -511,8 +611,14 @@ pub struct Group {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub groups: Vec<Group>,
-    /// 혼자만 있는 얼굴 (묶을 상대가 없음)
+    /// 미분류: 묶지 못한 얼굴 (같은 사람을 찾지 못함, 옆모습이라 뺌). 골라서 이름을 붙일 수 있다.
+    pub unsorted: Vec<FaceRow>,
+    /// 미분류 가운데 혼자만 있는 얼굴 (묶을 상대가 없음)
     pub singles: usize,
+    /// 미분류 가운데 옆모습이라 뺀 얼굴
+    pub turned: usize,
+    /// 옆모습을 빼도록 했지만 방향을 모르는 얼굴 (0.1.6 전에 분석) — 다시 분석하면 가릴 수 있다
+    pub no_turn: usize,
     /// 너무 작은 얼굴
     pub small: usize,
     pub analyzed: usize,
@@ -538,8 +644,11 @@ pub fn group(
     apart: &[(i64, i64)],
     analyzed: usize,
     total: usize,
+    opt: &Options,
 ) -> Report {
     let t0 = std::time::Instant::now();
+    let lim = opt.accuracy.limits();
+    let max_turn = opt.profile.max_turn();
     let mut report = Report { analyzed, total, ..Default::default() };
     let mut named: HashMap<i64, Vec<(FaceRow, bool)>> = HashMap::new();
     let mut rest: Vec<FaceRow> = Vec::new();
@@ -552,6 +661,18 @@ pub fn group(
             report.small += 1;
             continue;
         }
+        // 옆모습은 지문이 불안정해 다른 사람과 섞이기 쉬우므로 설정에 따라 묶지 않는다
+        if let Some(m) = max_turn {
+            match f.turn {
+                Some(t) if t > m => {
+                    report.turned += 1;
+                    report.unsorted.push(f);
+                    continue;
+                }
+                None => report.no_turn += 1,
+                _ => {}
+            }
+        }
         let mut sims: Vec<(f32, i64)> = people
             .iter()
             .filter(|(id, _, c, _)| !c.is_empty() && f.not_person != Some(*id))
@@ -559,13 +680,13 @@ pub fn group(
             .collect();
         sims.sort_by(|a, b| b.0.total_cmp(&a.0));
         match (sims.first(), sims.get(1)) {
-            (Some(&(s, id)), second) if s >= NAMED && second.is_none_or(|t| s - t.0 >= 0.08) => {
+            (Some(&(s, id)), second) if s >= lim.named && second.is_none_or(|t| s - t.0 >= lim.margin) => {
                 named.entry(id).or_default().push((f, true));
             }
             _ => rest.push(f),
         }
     }
-    let (clusters, fast) = average_linkage(rest, apart);
+    let (clusters, fast) = average_linkage(rest, apart, lim);
     report.fast = fast;
     let make = |person: Option<i64>, name: Option<String>, list: Vec<FaceRow>, auto: usize| -> Group {
         let cover = list.iter().max_by(|a, b| a.px.total_cmp(&b.px)).map(|f| f.id).unwrap_or(0);
@@ -582,12 +703,15 @@ pub fn group(
     for list in clusters {
         if list.len() < 2 {
             report.singles += list.len();
+            report.unsorted.extend(list);
             continue;
         }
         unnamed.push(make(None, None, list, 0));
     }
     unnamed.sort_by(|a, b| b.photos.cmp(&a.photos));
     report.groups.extend(unnamed);
+    // 미분류는 사진 순서대로 (같은 사진의 얼굴끼리 모여 고르기 쉽게)
+    report.unsorted.sort_by(|a, b| a.path.cmp(&b.path).then(a.rect[0].total_cmp(&b.rect[0])));
     report.ms = t0.elapsed().as_secs_f64() * 1000.0;
     report
 }
@@ -598,14 +722,15 @@ pub fn group(
 ///      평균은 지문 합의 내적으로 바로 구한다: avg(A,B) = (ΣA·ΣB) / (|A||B|)
 ///   3) "빼기"한 얼굴 쌍은 같은 묶음에 넣지 않는다: 그런 묶음끼리의 비슷함을 -∞로 두면
 ///      합칠 때의 가중 평균에서도 -∞가 이어져 끝까지 합쳐지지 않는다
-fn average_linkage(faces: Vec<FaceRow>, apart: &[(i64, i64)]) -> (Vec<Vec<FaceRow>>, bool) {
-    average_linkage_with(faces, apart, MAX_MERGE, MAX_SEEDS)
+fn average_linkage(faces: Vec<FaceRow>, apart: &[(i64, i64)], lim: Limits) -> (Vec<Vec<FaceRow>>, bool) {
+    average_linkage_with(faces, apart, lim, MAX_MERGE, MAX_SEEDS)
 }
 
 /// 한도(max_merge, max_seeds)를 받는 본체 (시험에서 작은 한도로 확인한다)
 fn average_linkage_with(
     mut faces: Vec<FaceRow>,
     apart: &[(i64, i64)],
+    lim: Limits,
     max_merge: usize,
     max_seeds: usize,
 ) -> (Vec<Vec<FaceRow>>, bool) {
@@ -631,7 +756,7 @@ fn average_linkage_with(
         let id = f.id;
         let banned: Vec<usize> = partners.get(&id).map_or(Vec::new(), |ps| ps.iter().filter_map(|p| seed_of.get(p).copied()).collect());
         let at = match nearest(&cents, dim, &f.emb, &banned) {
-            Some((s, i)) if s >= SEED => {
+            Some((s, i)) if s >= lim.seed => {
                 let (sum, m) = &mut seeds[i];
                 for (a, b) in sum.iter_mut().zip(&f.emb) {
                     *a += b;
@@ -717,7 +842,7 @@ fn average_linkage_with(
     };
     let mut best: Vec<(f32, usize)> = (0..n).into_par_iter().map(|i| row_best(&sim, &members, i)).collect();
     loop {
-        let mut top = (SAME, usize::MAX);
+        let mut top = (lim.same, usize::MAX);
         for (i, b) in best.iter().enumerate() {
             if b.0 > top.0 && members[i].is_some() {
                 top = (b.0, i);
@@ -1003,7 +1128,8 @@ pub fn analyze_one(models: &Models, path: &Path) -> anyhow::Result<Vec<Analyzed>
         let (emb, quality) = if side >= MIN_FACE_PX { models.fingerprint(&px, &f)? } else { (Vec::new(), 0.0) };
         // 이미 읽은 사진에서 바로 잘라 두면 인물 화면이 원본(클라우드)을 다시 읽지 않는다
         let crop = if side >= MIN_FACE_PX { crop_jpeg(&px, &f.rect) } else { None };
-        out.push(Analyzed { face: f, px: side, emb, quality, crop });
+        let turn = Some(turn_of(&f));
+        out.push(Analyzed { face: f, px: side, emb, quality, crop, turn });
     }
     Ok(out)
 }
@@ -1050,7 +1176,7 @@ mod tests {
     use super::*;
 
     fn face(id: i64, path: &str, emb: Vec<f32>, px: f32) -> FaceRow {
-        FaceRow { id, path: path.into(), rect: [0.0; 4], px, emb: mean(&[emb]), person: None, not_person: None, q: 1.0 }
+        FaceRow { id, path: path.into(), rect: [0.0; 4], px, emb: mean(&[emb]), person: None, not_person: None, q: 1.0, turn: None }
     }
 
     #[test]
@@ -1066,20 +1192,72 @@ mod tests {
             face(5, "/5.jpg", a(0.0), 20.0), // 너무 작음
             face(6, "/6.jpg", vec![-1.0, -0.3], 100.0), // 혼자
         ];
-        let r = group(faces.clone(), &[], &[], 6, 6);
+        let r = group(faces.clone(), &[], &[], 6, 6, &Options::default());
         assert_eq!(r.groups.len(), 2);
         assert_eq!((r.small, r.singles), (1, 1));
         // A에 이름: 1번 얼굴만 사용자가 정함 → 2번은 자동으로 들어온다
         let mut fs = faces.clone();
         fs[0].person = Some(7);
         let people = vec![(7, "엄마".to_string(), mean(&[a(0.05)]), 1)];
-        let r = group(fs.clone(), &people, &[], 6, 6);
+        let r = group(fs.clone(), &people, &[], 6, 6, &Options::default());
         let mom = r.groups.iter().find(|g| g.person == Some(7)).unwrap();
         assert_eq!((mom.faces.len(), mom.auto), (2, 1));
         // 2번이 "엄마 아님"이면 자동으로 넣지 않는다
         fs[1].not_person = Some(7);
-        let r = group(fs, &people, &[], 6, 6);
+        let r = group(fs, &people, &[], 6, 6, &Options::default());
         assert_eq!(r.groups.iter().find(|g| g.person == Some(7)).unwrap().faces.len(), 1);
+    }
+
+    #[test]
+    fn side_faces_and_loners_go_to_unsorted() {
+        // 2차원 지문으로 흉내: 사람 A는 (1,0) 근처
+        let a = |d: f32| vec![1.0, d];
+        let mut faces = vec![
+            face(1, "/1.jpg", a(0.0), 80.0),
+            face(2, "/2.jpg", a(0.1), 80.0),
+            face(3, "/3.jpg", a(0.05), 80.0),
+            face(4, "/4.jpg", vec![0.0, 1.0], 80.0), // 혼자인 얼굴
+        ];
+        faces[2].turn = Some(1.2); // 옆모습
+        faces[1].turn = Some(0.2);
+        let ids = |v: &[FaceRow]| v.iter().map(|f| f.id).collect::<Vec<_>>();
+        // 기본: 모두 묶고, 혼자인 얼굴만 미분류
+        let r = group(faces.clone(), &[], &[], 4, 4, &Options::default());
+        assert_eq!(r.groups.len(), 1);
+        assert_eq!(ids(&r.unsorted), vec![4]);
+        assert_eq!((r.singles, r.turned, r.no_turn), (1, 0, 0));
+        // 옆모습 빼기: 옆모습은 미분류로, 방향을 모르는 얼굴(예전 분석)은 묶되 센다
+        let opt = Options { profile: Profile::Half, ..Default::default() };
+        let r = group(faces.clone(), &[], &[], 4, 4, &opt);
+        assert_eq!(ids(&r.groups[0].faces).len(), 2);
+        assert_eq!(ids(&r.unsorted), vec![3, 4]);
+        assert_eq!((r.turned, r.no_turn), (1, 2));
+        // 정면만: 조금 돌린 얼굴(0.2)은 그대로 묶는다
+        let r = group(faces.clone(), &[], &[], 4, 4, &Options { profile: Profile::Front, ..Default::default() });
+        assert_eq!(r.groups.len(), 1);
+        let opt = Options { profile: Profile::Half, accuracy: Accuracy::High };
+        // 사용자가 이름을 붙인 얼굴(3)은 옆모습이어도 그 사람에게 그대로, 비슷한 다른 얼굴(1, 2)은 자동으로 들어간다
+        faces[2].person = Some(7);
+        let r = group(faces, &[(7, "민준".into(), a(0.0), 1)], &[], 4, 4, &opt);
+        assert_eq!(r.groups[0].name.as_deref(), Some("민준"));
+        assert_eq!((ids(&r.groups[0].faces), r.groups[0].auto), (vec![1, 2, 3], 2));
+    }
+
+    #[test]
+    fn stricter_accuracy_keeps_look_alikes_apart() {
+        // 비슷함 0.37인 두 사람(형제처럼 닮은 얼굴): 보통(0.34)은 합치고, 엄격하면(0.40) 나눈다
+        let c = 0.37f32;
+        let x = |k: f32| vec![1.0, 0.0, k];
+        let y = |k: f32| vec![c, (1.0 - c * c).sqrt(), k];
+        let faces: Vec<FaceRow> = [x(0.0), x(0.02), y(0.0), y(0.02)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| face(i as i64 + 1, &format!("/{i}.jpg"), e, 80.0))
+            .collect();
+        let normal = group(faces.clone(), &[], &[], 4, 4, &Options::default());
+        let high = group(faces, &[], &[], 4, 4, &Options { accuracy: Accuracy::High, ..Default::default() });
+        assert_eq!(normal.groups.len(), 1, "보통은 닮은 두 사람을 합침");
+        assert_eq!(high.groups.len(), 2, "엄격하면 나눔");
     }
 
     #[test]
@@ -1092,10 +1270,10 @@ mod tests {
             face(3, "/3.jpg", v(0.01), 100.0),
             face(4, "/4.jpg", v(0.03), 90.0),
         ];
-        let r = group(faces.clone(), &[], &[], 4, 4);
+        let r = group(faces.clone(), &[], &[], 4, 4, &Options::default());
         assert_eq!(r.groups.len(), 1);
         let apart = [(1, 2), (2, 3), (1, 4), (3, 4)];
-        let r = group(faces, &[], &apart, 4, 4);
+        let r = group(faces, &[], &apart, 4, 4, &Options::default());
         let mut sets: Vec<Vec<i64>> = r.groups.iter().map(|g| {
             let mut ids: Vec<i64> = g.faces.iter().map(|f| f.id).collect();
             ids.sort();
@@ -1116,11 +1294,11 @@ mod tests {
         // 128차원 무작위 지문 (서로 거의 직각 → 모두 다른 사람)
         let n = 300;
         let faces: Vec<FaceRow> = (0..n).map(|i| face(i as i64, "/p.jpg", (0..128).map(|_| rnd()).collect(), 100.0)).collect();
-        let (clusters, fast) = average_linkage_with(faces.clone(), &[], 100, 200);
+        let (clusters, fast) = average_linkage_with(faces.clone(), &[], Accuracy::Normal.limits(), 100, 200);
         assert!(fast);
         assert_eq!(clusters.iter().map(|c| c.len()).sum::<usize>(), n);
         // 한도 안이면 보통 방식
-        let (_, fast) = average_linkage_with(faces, &[], 1000, 1000);
+        let (_, fast) = average_linkage_with(faces, &[], Accuracy::Normal.limits(), 1000, 1000);
         assert!(!fast);
     }
 
@@ -1130,7 +1308,7 @@ mod tests {
         let r = Req { path: "/x/a.jpg".into(), size: 10, mtime: 1, index: 0 };
         assert!(!db.analyzed(&r));
         let f = Face { rect: [0.1, 0.1, 0.2, 0.2], marks: [[0.0; 2]; 5], score: 0.9 };
-        db.put(&r, &[Analyzed { face: f.clone(), px: 80.0, emb: vec![0.6, 0.8], quality: 1.0, crop: None }]);
+        db.put(&r, &[Analyzed { face: f.clone(), px: 80.0, emb: vec![0.6, 0.8], quality: 1.0, crop: None, turn: None }]);
         assert!(db.analyzed(&r));
         let rows = db.faces_of(&["/x/a.jpg".into()]);
         assert_eq!(rows.len(), 1);
@@ -1140,7 +1318,7 @@ mod tests {
         assert_eq!(db.people()[0].3, 1);
         // "빼기" 쌍은 다시 분석해도 같은 자리의 얼굴로 이어진다
         db.keep_apart(&[rows[0].id], &[999]).unwrap();
-        db.put(&r, &[Analyzed { face: f.clone(), px: 80.0, emb: vec![0.6, 0.8], quality: 1.0, crop: None }]);
+        db.put(&r, &[Analyzed { face: f.clone(), px: 80.0, emb: vec![0.6, 0.8], quality: 1.0, crop: None, turn: None }]);
         let again = db.faces_of(&["/x/a.jpg".into()]);
         assert_ne!(again[0].id, rows[0].id);
         assert_eq!(again[0].person, Some(p));
@@ -1167,9 +1345,9 @@ mod tests {
         db.put(
             &r,
             &[
-                Analyzed { face: face(0.1), px: 80.0, emb: vec![1.0], quality: 1.0, crop: Some(vec![1, 2, 3]) },
-                Analyzed { face: face(0.5), px: 80.0, emb: vec![1.0], quality: 1.0, crop: None },
-                Analyzed { face: face(0.8), px: 80.0, emb: vec![1.0], quality: 1.0, crop: None },
+                Analyzed { face: face(0.1), px: 80.0, emb: vec![1.0], quality: 1.0, crop: Some(vec![1, 2, 3]), turn: None },
+                Analyzed { face: face(0.5), px: 80.0, emb: vec![1.0], quality: 1.0, crop: None, turn: None },
+                Analyzed { face: face(0.8), px: 80.0, emb: vec![1.0], quality: 1.0, crop: None, turn: None },
             ],
         );
         let ids: Vec<i64> = db.faces_of(std::slice::from_ref(&r.path)).iter().map(|f| f.id).collect();
@@ -1248,7 +1426,7 @@ mod tests {
         assert_eq!(db.merge_spellings(), 0);
         // 이후로는 NFD 경로로 저장해도 같은 한 벌 (이름은 같은 자리 얼굴로 이어받음)
         let f = Face { rect: [0.1, 0.2, 0.1, 0.1], marks: [[0.0; 2]; 5], score: 0.9 };
-        db.put(&req(&decomposed), &[Analyzed { face: f, px: 80.0, emb: vec![1.0, 0.0], quality: 1.0, crop: None }]);
+        db.put(&req(&decomposed), &[Analyzed { face: f, px: 80.0, emb: vec![1.0, 0.0], quality: 1.0, crop: None, turn: None }]);
         let again = db.faces_of(std::slice::from_ref(&composed));
         assert_eq!(again.len(), 1);
         assert_eq!((again[0].path.as_str(), again[0].person), (composed.as_str(), Some(p)));

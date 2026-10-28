@@ -6,6 +6,9 @@
 //!   isee-bench gen-organize <폴더>      날짜·장소 정리용 사진 세트 (EXIF 날짜·GPS, 짝 파일, 동영상)
 //!   isee-bench organize <폴더> [큰 폴더]  날짜·위치 읽기 속도, 규칙별 폴더, 정리·되돌리기 시간
 //!   isee-bench group <얼굴 수> [사람 수]   얼굴 묶기 시간 (흉내 낸 지문, 단체 사진이 많은 폴더 크기)
+//!   isee-bench face-levels <faces.db 복사본>  정확도 단계별로 묶어 보고, 사용자가 붙인 이름과 비교 (복사본을 고침)
+//!   isee-bench face-turns <모델 폴더> <사진 폴더> <결과 폴더>  얼굴이 돌아간 정도별 얼굴 모음 (기준값 확인용)
+//!   isee-bench face-fill-turns <모델 폴더> <faces.db 복사본>  예전에 분석한 얼굴에 돌아간 정도를 채운다 (내려받은 사진만)
 
 use isee_core::cache::ThumbCache;
 use isee_core::decode::{self, generic};
@@ -84,6 +87,13 @@ fn main() -> anyhow::Result<()> {
             args.get(2).and_then(|v| v.parse().ok()).unwrap_or(10_000),
             args.get(3).and_then(|v| v.parse().ok()).unwrap_or(150),
         ),
+        Some("face-levels") => face_levels(Path::new(args.get(2).expect("faces.db 복사본"))),
+        Some("face-turns") => face_turns(
+            Path::new(args.get(2).expect("모델 폴더")),
+            Path::new(args.get(3).expect("사진 폴더")),
+            Path::new(args.get(4).expect("결과 폴더")),
+        ),
+        Some("face-fill-turns") => face_fill_turns(Path::new(args.get(2).expect("모델 폴더")), Path::new(args.get(3).expect("faces.db 복사본"))),
         Some("faces") => faces_bench(Path::new(args.get(2).expect("모델 폴더")), Path::new(args.get(3).expect("사진 폴더"))),
         Some("place") => {
             // 좌표 → 지명 확인: isee-bench place 37.56,126.97 33.25,126.41 …
@@ -894,11 +904,12 @@ fn group_bench(n: usize, persons: usize) -> anyhow::Result<()> {
                 person: None,
                 not_person: None,
                 q: 1.0,
+                turn: None,
             }
         })
         .collect();
     let t = Instant::now();
-    let r = group(faces, &[], &[], 0, 0);
+    let r = group(faces, &[], &[], 0, 0, &isee_core::people::Options::default());
     let grouped: usize = r.groups.iter().map(|g| g.faces.len()).sum();
     println!(
         "얼굴 {n}개 · 사람 {persons}명 → 묶음 {}개 (묶인 얼굴 {grouped}, 혼자 {}) · 빠른 방식 {} · {:.0}ms",
@@ -907,6 +918,159 @@ fn group_bench(n: usize, persons: usize) -> anyhow::Result<()> {
         r.fast,
         t.elapsed().as_secs_f64() * 1000.0
     );
+    Ok(())
+}
+
+/// 사용자가 이름을 붙인 얼굴을 정답으로: 이름을 지우고 단계마다 다시 묶어
+/// 같은 사람끼리 얼마나 묶였는지(놓침), 다른 사람이 얼마나 섞였는지(틀림)를 센다.
+fn face_levels(db: &Path) -> anyhow::Result<()> {
+    use isee_core::people::{Accuracy, FaceDb, FaceRow, Options, Profile, group};
+    use std::collections::HashMap;
+    let db = FaceDb::open(Some(db))?;
+    db.merge_spellings();
+    let faces = db.all_faces();
+    let label: HashMap<i64, i64> = faces.iter().filter_map(|f| f.person.map(|p| (f.id, p))).collect();
+    let not: Vec<(i64, i64)> = faces.iter().filter_map(|f| f.not_person.map(|p| (f.id, p))).collect();
+    let with_turn = faces.iter().filter(|f| f.turn.is_some()).count();
+    println!("얼굴 {}개 · 이름 붙은 얼굴 {}개(사람 {}명) · \"이 사람 아님\" {}개 · 방향 아는 얼굴 {with_turn}개", faces.len(), label.len(), label.values().collect::<std::collections::HashSet<_>>().len(), not.len());
+    let rows: Vec<FaceRow> = faces.into_iter().map(|f| FaceRow { person: None, not_person: None, ..f }).collect();
+    for acc in [Accuracy::Low, Accuracy::Normal, Accuracy::High] {
+        for profile in [Profile::All, Profile::Half, Profile::Front] {
+            let r = group(rows.clone(), &[], &[], 0, 0, &Options { accuracy: acc, profile });
+            let mut gid: HashMap<i64, usize> = HashMap::new();
+            for (g, grp) in r.groups.iter().enumerate() {
+                for f in &grp.faces {
+                    gid.insert(f.id, g);
+                }
+            }
+            let ids: Vec<(&i64, &i64)> = label.iter().collect();
+            let (mut same, mut same_tog, mut tog, mut wrong) = (0, 0, 0, 0);
+            for i in 0..ids.len() {
+                for j in i + 1..ids.len() {
+                    let together = matches!((gid.get(ids[i].0), gid.get(ids[j].0)), (Some(a), Some(b)) if a == b);
+                    let s = ids[i].1 == ids[j].1;
+                    same += s as usize;
+                    same_tog += (s && together) as usize;
+                    tog += together as usize;
+                    wrong += (!s && together) as usize;
+                }
+            }
+            // "이 사람 아님"이라고 한 얼굴이 그 사람 얼굴과 한 묶음에 들어감
+            let broken = not
+                .iter()
+                .filter(|(x, p)| gid.get(x).is_some_and(|g| label.iter().any(|(y, q)| q == p && gid.get(y) == Some(g))))
+                .count();
+            let grouped = label.keys().filter(|id| gid.contains_key(id)).count();
+            // 이름 붙은 사람에게 자동으로 넣기: 사람마다 이름 붙은 얼굴의 평균 지문을 두고, 이름을 지운 얼굴을 다시 넣어 본다
+            let mut cents: HashMap<i64, Vec<f32>> = HashMap::new();
+            for f in &rows {
+                if let Some(p) = label.get(&f.id) {
+                    let c = cents.entry(*p).or_insert_with(|| vec![0.0; f.emb.len()]);
+                    c.iter_mut().zip(&f.emb).for_each(|(a, b)| *a += b);
+                }
+            }
+            let people: Vec<(i64, String, Vec<f32>, usize)> = cents
+                .into_iter()
+                .map(|(p, mut c)| {
+                    let n = c.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-6);
+                    c.iter_mut().for_each(|v| *v /= n);
+                    (p, p.to_string(), c, 1)
+                })
+                .collect();
+            let rn = group(rows.clone(), &people, &[], 0, 0, &Options { accuracy: acc, profile });
+            let mut who: HashMap<i64, i64> = HashMap::new();
+            for g in &rn.groups {
+                if let Some(p) = g.person {
+                    for f in &g.faces {
+                        who.insert(f.id, p);
+                    }
+                }
+            }
+            let right = label.iter().filter(|(id, p)| who.get(id) == Some(p)).count();
+            let wrong_named = label.iter().filter(|(id, p)| who.get(id).is_some_and(|q| q != *p)).count();
+            let false_in = not.iter().filter(|(x, p)| who.get(x) == Some(p)).count();
+            let auto: usize = rn.groups.iter().map(|g| g.auto).sum();
+            println!(
+                "  자동 넣기: 이름 붙은 얼굴 {right}/{} 제자리 · 다른 사람에게 {wrong_named} · \"아님\" 얼굴이 그 사람에게 {false_in}/{} · 자동으로 넣은 얼굴 {auto}",
+                label.len(),
+                not.len()
+            );
+            println!(
+                "{acc:?}/{profile:?}: 묶음 {} · 미분류 {} · 이름 붙은 얼굴 중 묶임 {grouped}/{} · 같은 사람 쌍 함께 {same_tog}/{same} ({:.0}%) · 함께 묶인 쌍 중 다른 사람 {wrong}/{tog} ({:.1}%) · \"아님\" 어김 {broken}/{} · {:.0}ms",
+                r.groups.len(),
+                r.unsorted.len(),
+                label.len(),
+                100.0 * same_tog as f64 / same.max(1) as f64,
+                100.0 * wrong as f64 / tog.max(1) as f64,
+                not.len(),
+                r.ms
+            );
+        }
+    }
+    Ok(())
+}
+
+/// faces.db 복사본의 얼굴마다 사진을 다시 찾아 돌아간 정도를 채운다 (같은 자리 얼굴, 겹침 40% 넘게)
+fn face_fill_turns(models: &Path, db: &Path) -> anyhow::Result<()> {
+    let m = isee_core::faces::Models::load(models)?;
+    let conn = rusqlite::Connection::open(db)?;
+    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN turn REAL;");
+    let paths: Vec<String> = conn.prepare("SELECT DISTINCT path FROM faces")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    let (mut filled, mut skipped) = (0, 0);
+    for p in &paths {
+        if listing::is_online_only(Path::new(p)) || !Path::new(p).exists() {
+            skipped += 1;
+            continue;
+        }
+        let found = isee_core::people::analyze_one(&m, Path::new(p))?;
+        let rows: Vec<(i64, String)> = conn.prepare("SELECT id, rect FROM faces WHERE path = ?1")?.query_map([p], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        for (id, rect) in rows {
+            let r: Vec<f32> = rect.trim_matches(['[', ']']).split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            if r.len() != 4 {
+                continue;
+            }
+            let ov = |a: &[f32; 4]| {
+                let ix = (a[0] + a[2]).min(r[0] + r[2]) - a[0].max(r[0]);
+                let iy = (a[1] + a[3]).min(r[1] + r[3]) - a[1].max(r[1]);
+                if ix <= 0.0 || iy <= 0.0 { 0.0 } else { ix * iy / (a[2] * a[3] + r[2] * r[3] - ix * iy) }
+            };
+            if let Some(t) = found.iter().filter(|a| ov(&a.face.rect) > 0.4).max_by(|a, b| ov(&a.face.rect).total_cmp(&ov(&b.face.rect))).and_then(|a| a.turn) {
+                conn.execute("UPDATE faces SET turn = ?2 WHERE id = ?1", rusqlite::params![id, t])?;
+                filled += 1;
+            }
+        }
+    }
+    println!("사진 {}장 · 얼굴 {filled}개 채움 · 클라우드에만 있어 건너뜀 {skipped}장", paths.len());
+    Ok(())
+}
+
+/// 사진 폴더의 얼굴을 찾아 돌아간 정도(turn) 순서로 한 장에 늘어놓는다 (10개씩 한 줄, 왼쪽 위부터)
+fn face_turns(models: &Path, dir: &Path, out: &Path) -> anyhow::Result<()> {
+    let m = isee_core::faces::Models::load(models)?;
+    std::fs::create_dir_all(out)?;
+    let mut all: Vec<(f32, f32, String, Vec<u8>)> = Vec::new();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?.flatten().map(|e| e.path()).filter(|p| isee_core::formats::kind_of(p) == isee_core::formats::Kind::Image && !listing::is_online_only(p)).collect();
+    files.sort();
+    for f in &files {
+        for (i, a) in isee_core::people::analyze_one(&m, f)?.into_iter().enumerate() {
+            if let (Some(c), Some(t)) = (a.crop, a.turn) {
+                all.push((t, a.quality, format!("{}#{i}", f.file_name().unwrap().to_string_lossy()), c));
+            }
+        }
+    }
+    all.sort_by(|a, b| a.0.total_cmp(&b.0));
+    const S: u32 = 120;
+    let cols = 10u32;
+    let rows = (all.len() as u32).div_ceil(cols).max(1);
+    let mut sheet = image::RgbImage::new(cols * S, rows * S);
+    for (k, (t, q, name, jpeg)) in all.iter().enumerate() {
+        let img = image::load_from_memory(jpeg)?.to_rgb8();
+        let img = image::imageops::resize(&img, S, S, image::imageops::FilterType::Triangle);
+        image::imageops::replace(&mut sheet, &img, ((k as u32 % cols) * S) as i64, ((k as u32 / cols) * S) as i64);
+        println!("{k:>3} 돌린 정도 {t:.2} · 품질 {q:.1} · {name}");
+    }
+    sheet.save(out.join("turns.jpg"))?;
+    println!("얼굴 {}개 → {}", all.len(), out.join("turns.jpg").display());
     Ok(())
 }
 
@@ -980,12 +1144,12 @@ fn faces_bench(models: &Path, dir: &Path) -> anyhow::Result<()> {
                 if let Some(w) = who {
                     label.insert(id, w);
                 }
-                rows.push(FaceRow { id, path: f.to_string_lossy().into_owned(), rect: face.rect, px, emb, person: None, not_person: None, q: quality });
+                rows.push(FaceRow { id, path: f.to_string_lossy().into_owned(), rect: face.rect, px, emb, person: None, not_person: None, q: quality, turn: None });
             }
         }
         let analyze_ms = t.elapsed().as_secs_f64() * 1000.0 / files.len().max(1) as f64;
         let labeled = rows.iter().filter(|r| label.contains_key(&r.id)).count();
-        let r = group(rows, &[], &[], files.len(), files.len());
+        let r = group(rows, &[], &[], files.len(), files.len(), &isee_core::people::Options::default());
         println!("\n분석(찾기+지문) 장당 {analyze_ms:.0}ms · 정답 얼굴 {truth_total}개 중 찾음 {} ({:.0}%)", found_truth.len(), 100.0 * found_truth.len() as f64 / truth_total.max(1) as f64);
         println!("자동 묶기: 묶음 {}개 · 혼자 {} · 작은 얼굴 {} · {:.1}ms", r.groups.len(), r.singles, r.small, r.ms);
         let (mut pure, mut total) = (0, 0);

@@ -64,6 +64,10 @@ pub struct Settings {
     pub organize_copy: bool,
     /// 폴더를 열면 전체 썸네일을 미리 만든다 (끄면 화면에 보이는 것만)
     pub bg_prefill: bool,
+    /// 인물: 같은 사람으로 묶는 엄격함 ("low" | "normal" | "high")
+    pub face_accuracy: isee_core::people::Accuracy,
+    /// 인물: 옆모습을 묶을지 ("all" | "half" | "front")
+    pub face_profile: isee_core::people::Profile,
 }
 
 impl Default for Settings {
@@ -90,6 +94,8 @@ impl Default for Settings {
             organize: Default::default(),
             organize_copy: false,
             bg_prefill: true,
+            face_accuracy: Default::default(),
+            face_profile: Default::default(),
         }
     }
 }

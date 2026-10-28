@@ -228,6 +228,29 @@ impl Models {
     }
 }
 
+/// 얼굴이 옆으로 돌아간 정도. 0 = 정면, 1 = 코끝이 한쪽 눈 바로 앞까지 온 정도(반쯤 돌린 얼굴), 그 이상은 옆모습.
+/// 눈·코·입 5점으로 어림한다: 코끝이 두 눈의 가운데(그리고 두 입꼬리의 가운데)에서 그 사이 거리의 반만큼
+/// 비켜나면 1. 고개를 갸웃해도 같은 값이 나오게 눈(입)을 잇는 방향으로 잰다.
+pub fn turn_of(face: &Face) -> f32 {
+    let [re, le, nose, rm, lm] = face.marks;
+    let off = |a: [f32; 2], b: [f32; 2]| -> Option<f32> {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-3 {
+            return None;
+        }
+        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+        Some(((nose[0] - mid[0]) * dx + (nose[1] - mid[1]) * dy) / len / (len / 2.0))
+    };
+    let t = match (off(re, le), off(rm, lm)) {
+        (Some(e), Some(m)) => (e + m) / 2.0,
+        (Some(t), None) | (None, Some(t)) => t,
+        // 두 눈·두 입꼬리가 한 점에 겹침: 완전히 옆으로 돌린 얼굴
+        (None, None) => 3.0,
+    };
+    t.abs().min(3.0)
+}
+
 /// a가 b 안에 거의 들어가 있는가 (조각에서 얼굴 일부만 찾은 경우를 지우기 위해)
 fn inside(a: &[f32; 4], b: &[f32; 4]) -> bool {
     let ix = (a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0]);
@@ -327,5 +350,22 @@ mod tests {
         let (x, y) = (TEMPLATE[2][0], TEMPLATE[2][1]);
         let (u, v) = (inv[0] * x + inv[1] * y + inv[2], inv[3] * x + inv[4] * y + inv[5]);
         assert!((u - src[2][0]).abs() < 1e-2 && (v - src[2][1]).abs() < 1e-2);
+    }
+
+    #[test]
+    fn turn_is_zero_for_a_frontal_face_and_grows_when_the_nose_moves_aside() {
+        // 정면: 표준 5점 (SFace 정렬 기준 얼굴)
+        let front = Face { rect: [0.0; 4], marks: TEMPLATE, score: 1.0 };
+        assert!(turn_of(&front) < 0.05, "{}", turn_of(&front));
+        // 고개를 갸웃해도(30° 기울임) 정면이면 그대로
+        let (c, s) = (30f32.to_radians().cos(), 30f32.to_radians().sin());
+        let tilted = Face { marks: TEMPLATE.map(|[x, y]| [x * c - y * s, x * s + y * c]), ..front.clone() };
+        assert!(turn_of(&tilted) < 0.05);
+        // 코끝을 한쪽 눈 쪽으로 옮기면 커진다
+        let mut half = front.clone();
+        half.marks[2][0] = (TEMPLATE[0][0] + TEMPLATE[2][0]) / 2.0;
+        let mut side = front.clone();
+        side.marks[2][0] = TEMPLATE[0][0] - 5.0;
+        assert!(turn_of(&half) > 0.3 && turn_of(&half) < turn_of(&side), "{} {}", turn_of(&half), turn_of(&side));
     }
 }

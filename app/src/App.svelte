@@ -33,6 +33,7 @@
   import PeopleView from "./components/PeopleView.svelte";
   import BgPanel from "./components/BgPanel.svelte";
   import AboutDialog from "./components/AboutDialog.svelte";
+  import HelpDialog from "./components/HelpDialog.svelte";
   import { checkForUpdate, scheduleUpdateCheck } from "./lib/update";
 
   let cols = $state(1);
@@ -46,6 +47,8 @@
   let bgOpen = $state(false);
   /** iSee 정보 창 (만든 사람·면책 조항) */
   let aboutOpen = $state<"about" | "disclaimer" | null>(null);
+  /** 사용 설명서 */
+  let helpOpen = $state(false);
   /** 백그라운드에서 뭔가 하고 있는지 (상태 표시줄 문구) */
   let bgLabel = $derived.by(() => {
     const b = stats?.bg;
@@ -123,7 +126,7 @@
   }
 
   // 비교·비슷한 사진 화면이 덮고 있을 때 메뉴로 받아도 되는 것 (보이지 않는 그리드 선택을 지우거나 옮기지 않게)
-  const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update", "bg_panel", "analyze_ahead", "about", "disclaimer"]);
+  const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update", "bg_panel", "analyze_ahead", "about", "disclaimer", "manual"]);
 
   function onMenu(id: string) {
     // 편집기에서는 실행 취소가 편집 단계를 되돌린다
@@ -201,6 +204,9 @@
       case "disclaimer":
         aboutOpen = id;
         return;
+      case "manual":
+        helpOpen = true;
+        return;
       case "shell_install":
       case "shell_uninstall":
         return toggleShell(id === "shell_install");
@@ -228,6 +234,20 @@
   const MAC_MENU_KEYS = new Set(["z", "a", "o", "n", "[", "]", "ArrowUp", "=", "-"]);
 
   function onKey(e: KeyboardEvent) {
+    if (helpOpen) {
+      // 찾기 칸에 글을 쓰는 동안에는 Esc만 받는다
+      if (e.key === "Escape") {
+        e.preventDefault();
+        helpOpen = false;
+      }
+      return;
+    }
+    // 사용 설명서 (맥은 메뉴 단축키로도 온다)
+    if (e.key === "F1" && !isMac) {
+      e.preventDefault();
+      helpOpen = true;
+      return;
+    }
     if (aboutOpen) {
       if (e.key === "Escape" || e.key === "Enter") {
         e.preventDefault();
@@ -698,6 +718,10 @@
 
 {#if aboutOpen}
   <AboutDialog focus={aboutOpen} onclose={() => (aboutOpen = null)} />
+{/if}
+
+{#if helpOpen}
+  <HelpDialog onclose={() => (helpOpen = false)} />
 {/if}
 
 <Dialogs />

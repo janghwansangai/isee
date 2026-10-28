@@ -50,6 +50,8 @@ const DEFAULT_SETTINGS: Settings = {
   similar: { level: 3, keep: 1, rules: ["sharp", "exposure", "noise", "resolution", "newest"] },
   organize: { pattern: "{년}/{년}-{월}", level: "city", guess_place: true, event_hours: 6 },
   organize_copy: false,
+  face_accuracy: "normal",
+  face_profile: "all",
 };
 
 class Store {

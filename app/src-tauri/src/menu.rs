@@ -185,16 +185,20 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         ],
     )?);
     // 도움말: 만든 사람·홈페이지·면책 조항 (맥은 정보·업데이트가 iSee 메뉴에도 있다)
+    // 사용 설명서는 F1 (화면에서 처리, 맥 메뉴에도 같은 키를 보여 준다)
+    let manual = MenuItem::with_id(app, "manual", "사용 설명서", true, mac_accel("F1"))?;
     let homepage = MenuItem::with_id(app, "homepage", "홈페이지 (hwansang.kr)", true, None::<&str>)?;
     let disclaimer = MenuItem::with_id(app, "disclaimer", "면책 조항…", true, None::<&str>)?;
     #[cfg(target_os = "macos")]
-    top.push(Submenu::with_items(app, "도움말", true, &[&homepage, &disclaimer])?);
+    top.push(Submenu::with_items(app, "도움말", true, &[&manual, &sep()?, &homepage, &disclaimer])?);
     #[cfg(not(target_os = "macos"))]
     top.push(Submenu::with_items(
         app,
         "도움말",
         true,
         &[
+            &manual,
+            &sep()?,
             &MenuItem::with_id(app, "about", "iSee 정보 (만든 사람)…", true, None::<&str>)?,
             &homepage,
             &disclaimer,

@@ -910,6 +910,25 @@ fn faces_stop(state: State<'_, AppState>) {
     state.faces.analyze(Vec::new());
 }
 
+/// 설정의 묶는 방식 (정확도·옆모습)
+fn face_options(state: &AppState) -> people::Options {
+    let s = state.settings.lock();
+    people::Options { accuracy: s.face_accuracy, profile: s.face_profile }
+}
+
+/// 얼굴 방향을 모르는(0.1.6 전에 분석한) 사진을 다시 분석하도록 되돌린다. 화면이 이어서 분석을 시작한다.
+#[tauri::command]
+async fn faces_redo_turn(app: AppHandle, folder: String, recursive: bool, extra: Option<Vec<String>>) -> CmdResult<usize> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let reqs = scope_images(&state, &Scope::new(folder, extra, Some(recursive)))?;
+        let paths: Vec<String> = reqs.into_iter().map(|r| r.path).collect();
+        Ok(state.faces.db().forget_without_turn(&paths))
+    })
+    .await
+    .map_err(err)?
+}
+
 /// 인물 화면을 닫으면 아직 만들지 못한 얼굴 썸네일 요청은 버린다
 #[tauri::command]
 fn faces_crops_cancel(state: State<'_, AppState>) {
@@ -927,7 +946,7 @@ async fn faces_report(app: AppHandle, folder: String, recursive: bool, extra: Op
         let db = state.faces.db();
         let analyzed = reqs.iter().filter(|r| db.analyzed(r)).count();
         let paths: Vec<String> = reqs.into_iter().map(|r| r.path).collect();
-        people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), analyzed, total)
+        people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), analyzed, total, &face_options(&state))
     })
     .await
     .map_err(err)
@@ -992,7 +1011,7 @@ async fn faces_organize(
         let reqs = scope_images(&state, &Scope::new(folder, extra, Some(recursive))).unwrap_or_default();
         let db = state.faces.db();
         let paths: Vec<String> = reqs.into_iter().map(|r| r.path).collect();
-        let report = people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), 0, 0);
+        let report = people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), 0, 0, &face_options(&state));
         // 얼굴 → 사람 (자동으로 넣은 것 포함), 사람 → 이름
         let mut person_of: HashMap<i64, i64> = HashMap::new();
         let mut names: HashMap<i64, String> = HashMap::new();
@@ -1647,6 +1666,7 @@ pub fn run() {
             faces_analyze,
             faces_stop,
             faces_crops_cancel,
+            faces_redo_turn,
             open_homepage,
             app_info,
             faces_report,

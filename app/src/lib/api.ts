@@ -92,6 +92,10 @@ export interface Settings {
   similar: SimilarOptions;
   organize: OrganizeOptions;
   organize_copy: boolean;
+  /** 인물: 같은 사람으로 묶는 엄격함 */
+  face_accuracy: "low" | "normal" | "high";
+  /** 인물: 옆모습 묶기 (all 모두 · half 많이 돌린 얼굴 빼기 · front 정면만) */
+  face_profile: "all" | "half" | "front";
 }
 
 // ───── 인물 (8단계) ─────
@@ -113,7 +117,13 @@ export interface PersonGroup {
 }
 export interface PeopleReport {
   groups: PersonGroup[];
+  /** 미분류: 묶지 못한 얼굴 (같은 사람을 못 찾음, 옆모습이라 뺌) */
+  unsorted: FaceRow[];
   singles: number;
+  /** 미분류 가운데 옆모습이라 뺀 얼굴 */
+  turned: number;
+  /** 옆모습을 빼도록 했지만 방향을 모르는 얼굴 (0.1.6 전에 분석) */
+  no_turn: number;
   small: number;
   analyzed: number;
   total: number;
@@ -385,6 +395,7 @@ export const api = {
     invoke<[number, number]>("faces_analyze", { folder: sc.path, recursive: sc.recursive, extra: sc.extra }),
   facesStop: () => invoke("faces_stop"),
   facesCropsCancel: () => invoke("faces_crops_cancel"),
+  facesRedoTurn: (sc: Scope) => invoke<number>("faces_redo_turn", { folder: sc.path, recursive: sc.recursive, extra: sc.extra }),
   openHomepage: () => invoke("open_homepage"),
   appInfo: () => invoke<AppInfo>("app_info"),
   facesReport: (sc: Scope) =>

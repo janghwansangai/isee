@@ -5,7 +5,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { store } from "../lib/store.svelte";
-  import { api, baseName, faceUrl, fmtSize, isMac, type PeopleReport, type PersonGroup, scopeLabel } from "../lib/api";
+  import { api, baseName, faceUrl, fmtSize, isMac, type PeopleReport, type PersonGroup, type Settings, scopeLabel } from "../lib/api";
   import Icon from "./Icon.svelte";
 
   // 연 범위 (지금 폴더, 함께 보는 다른 폴더). 하위 폴더 포함은 이 화면에서도 바꿀 수 있다.
@@ -24,15 +24,25 @@
   let nameInput = $state("");
   let working = $state(false);
 
-  const keyOf = (g: PersonGroup) => (g.person != null ? `p:${g.person}` : `u:${g.cover}`);
+  /** 목록의 한 줄: 사람 묶음, 또는 맨 끝의 "미분류" (묶지 못한 얼굴) */
+  type ListGroup = PersonGroup & { unsorted?: true };
+  const UNSORTED = "x:unsorted";
+  const keyOf = (g: ListGroup) => (g.unsorted ? UNSORTED : g.person != null ? `p:${g.person}` : `u:${g.cover}`);
+  let groups = $derived.by((): ListGroup[] => {
+    const r = report;
+    if (!r) return [];
+    if (!r.unsorted.length) return r.groups;
+    const photos = new Set(r.unsorted.map((f) => f.path)).size;
+    return [...r.groups, { person: null, name: null, faces: r.unsorted, cover: r.unsorted[0].id, photos, auto: 0, unsorted: true }];
+  });
   let unnamedNo = $derived.by(() => {
     const m = new Map<string, number>();
     let n = 0;
     for (const g of report?.groups ?? []) if (g.person == null) m.set(keyOf(g), ++n);
     return m;
   });
-  const title = (g: PersonGroup) => g.name ?? `이름 없음 ${unnamedNo.get(keyOf(g)) ?? ""}`;
-  let sel = $derived(report?.groups.find((g) => keyOf(g) === selKey) ?? null);
+  const title = (g: ListGroup) => (g.unsorted ? "미분류" : (g.name ?? `이름 없는 인물 ${unnamedNo.get(keyOf(g)) ?? ""}`));
+  let sel = $derived(groups.find((g) => keyOf(g) === selKey) ?? null);
   let named = $derived((report?.groups ?? []).filter((g) => g.person != null));
   let analyzing = $derived(progress[1] > 0 && progress[0] < progress[1]);
 
@@ -59,7 +69,6 @@
     return faces.slice(first, last).map((f, k) => ({ f, i: first + k }));
   });
   let shownGroups = $derived.by(() => {
-    const groups = report?.groups ?? [];
     const first = Math.max(0, Math.floor(listY / ITEM_H) - OVERSCAN * 2);
     const last = Math.min(groups.length, Math.ceil((listY + listH) / ITEM_H) + OVERSCAN * 2);
     return groups.slice(first, last).map((g, k) => ({ g, i: first + k }));
@@ -101,7 +110,8 @@
       const r = await api.facesReport(scope);
       report = r;
       lastAt = performance.now();
-      if (!selKey || !r.groups.some((g) => keyOf(g) === selKey)) selKey = r.groups[0] ? keyOf(r.groups[0]) : null;
+      const keys = [...r.groups.map(keyOf), ...(r.unsorted.length ? [UNSORTED] : [])];
+      if (!selKey || !keys.includes(selKey)) selKey = keys[0] ?? null;
     } catch (e) {
       store.showToast(`인물을 불러오지 못했습니다: ${e}`, { error: true });
     }
@@ -202,27 +212,52 @@
     }
   }
 
+  /** 이름 붙이기: 이름 없는 묶음은 고른 얼굴이 있으면 그 얼굴만(없으면 전부), 미분류는 고른 얼굴만.
+   *  이름 붙은 사람이면 이름만 바꾼다. 같은 이름의 사람이 이미 있으면 그 사람으로 합친다. */
   function saveName() {
     const g = sel;
     const name = nameInput.trim();
-    if (!g || !name) return;
-    // 같은 이름의 사람이 이미 있으면 그 사람으로 합친다
+    if (!g || !name || (g.unsorted && !picked.size)) return;
     const same = named.find((n) => n.name === name && n.person !== g.person);
+    const some = g.person == null && picked.size > 0;
     act(async () => {
-      const ids = g.faces.map((f) => f.id);
+      const ids = some ? [...picked] : g.faces.map((f) => f.id);
       const id = await api.facesName(ids, same?.person ?? g.person, same ? null : name);
-      selKey = `p:${id}`;
+      // 미분류·일부만 붙였으면 남은 얼굴을 계속 보여 준다
+      if (!some) selKey = `p:${id}`;
+      else nameInput = "";
     });
   }
 
   function mergeInto(person: number) {
     const g = sel;
-    if (!g) return;
+    if (!g || (g.unsorted && !picked.size)) return;
     act(async () => {
       const ids = picked.size ? [...picked] : g.faces.map((f) => f.id);
       await api.facesName(ids, person, null);
       if (!picked.size) selKey = `p:${person}`;
     });
+  }
+
+  // ───── 묶는 방식 (정확도·옆모습) ─────
+  async function setOption(patch: Partial<Settings>) {
+    await store.setSettings(patch);
+    await refresh();
+  }
+
+  /** 옆모습을 빼려면 예전에(0.1.6 전) 분석한 얼굴은 방향을 알도록 다시 분석해야 한다 */
+  async function redoTurn() {
+    try {
+      const n = await api.facesRedoTurn(scope);
+      if (!n) {
+        store.showToast("다시 분석할 사진이 없습니다 (클라우드에만 있는 사진은 내려받아야 합니다)");
+        return;
+      }
+      await refresh();
+      await start();
+    } catch (e) {
+      store.showToast(`${e}`, { error: true });
+    }
   }
 
   /** 고른 얼굴(없으면 자동으로 들어온 것 전부) "이 사람 아님" */
@@ -253,7 +288,7 @@
   async function deletePerson() {
     const g = sel;
     if (!g || g.person == null) return;
-    const ok = await ask(`"${g.name}" 이름을 지울까요? 얼굴은 다시 "이름 없음"으로 묶입니다.`, {
+    const ok = await ask(`"${g.name}" 이름을 지울까요? 얼굴은 다시 "이름 없는 인물"로 묶입니다.`, {
       title: "인물 지우기",
       kind: "warning",
       okLabel: "지우기",
@@ -339,6 +374,22 @@
     <span class="dim">{scopeLabel({ ...base, recursive: false })}</span>
     {#if installed}
       <label class="check"><input type="checkbox" bind:checked={recursive} /> 하위 폴더 포함</label>
+      <label class="opt" title="엄격할수록 다른 사람이 섞이는 일이 줄고, 대신 미분류로 남는 얼굴이 늘어납니다. 다시 분석하지 않고 바로 다시 묶습니다.">
+        정확도
+        <select value={store.settings.face_accuracy} onchange={(e) => setOption({ face_accuracy: e.currentTarget.value as Settings["face_accuracy"] })}>
+          <option value="low">낮음 (많이 묶기)</option>
+          <option value="normal">보통</option>
+          <option value="high">높음 (확실한 것만)</option>
+        </select>
+      </label>
+      <label class="opt" title="옆모습은 다른 사람과 섞이기 쉽습니다. 뺀 얼굴은 미분류로 갑니다. 이름을 직접 붙인 얼굴은 그대로 둡니다.">
+        옆모습
+        <select value={store.settings.face_profile} onchange={(e) => setOption({ face_profile: e.currentTarget.value as Settings["face_profile"] })}>
+          <option value="all">모두 묶기</option>
+          <option value="half">많이 돌린 얼굴 빼기</option>
+          <option value="front">정면에 가까운 얼굴만</option>
+        </select>
+      </label>
       {#if analyzing}
         <span class="progress" title="사진을 보는 동안에는 잠시 멈춥니다">
           얼굴 찾는 중 {progress[0].toLocaleString()} / {progress[1].toLocaleString()}
@@ -396,24 +447,42 @@
         {/if}
       </div>
     {/if}
+    {#if report && store.settings.face_profile !== "all" && report.no_turn > 0 && !analyzing}
+      <div class="banner">
+        <span>
+          예전에 분석한 얼굴 <b>{report.no_turn.toLocaleString()}개</b>는 얼굴 방향 정보가 없어 옆모습을 가리지 못했습니다.
+          다시 분석하면 가릴 수 있습니다 (붙인 이름은 그대로 남습니다).
+        </span>
+        <span class="spacer"></span>
+        <button class="btn primary" onclick={redoTurn}>방향 다시 분석</button>
+      </div>
+    {/if}
     <div class="main">
       <aside class="list" bind:clientHeight={listH} onscroll={(e) => (listY = e.currentTarget.scrollTop)}>
-        {#if report && !report.groups.length}
+        {#if report && !groups.length}
           <p class="empty">{analyzing ? "얼굴을 찾는 대로 나타납니다…" : "묶을 얼굴이 없습니다."}</p>
         {/if}
-        <div class="persons" style="height:{(report?.groups.length ?? 0) * ITEM_H}px">
+        <div class="persons" style="height:{groups.length * ITEM_H}px">
           {#each shownGroups as { g, i } (keyOf(g))}
-            <button class="person" style="top:{i * ITEM_H}px" class:on={keyOf(g) === selKey} onclick={() => (selKey = keyOf(g))}>
+            <button
+              class="person"
+              class:unsorted={g.unsorted}
+              style="top:{i * ITEM_H}px"
+              class:on={keyOf(g) === selKey}
+              onclick={() => (selKey = keyOf(g))}
+            >
               <img src={faceUrl(g.cover)} alt="" />
               <span class="info">
                 <span class="name" class:unnamed={!g.name}>{title(g)}</span>
-                <span class="count">사진 {g.photos}장{g.auto ? ` · 확인 필요 ${g.auto}` : ""}</span>
+                <span class="count">
+                  {g.unsorted ? `얼굴 ${g.faces.length}개 · 골라서 이름 붙이기` : `사진 ${g.photos}장${g.auto ? ` · 확인 필요 ${g.auto}` : ""}`}
+                </span>
               </span>
             </button>
           {/each}
         </div>
-        {#if report && (report.singles || report.small)}
-          <p class="note">한 번만 나온 얼굴 {report.singles}개, 너무 작은 얼굴 {report.small}개는 묶지 않았습니다.</p>
+        {#if report?.small}
+          <p class="note">너무 작은 얼굴 {report.small}개는 묶지 않았습니다.</p>
         {/if}
         {#if report?.fast}
           <p class="note">얼굴이 아주 많아 빠른 방식으로 묶었습니다 (메모리를 아끼려고 큰 묶음끼리만 합침). 폴더를 나누어 보면 더 정확합니다.</p>
@@ -430,12 +499,16 @@
               bind:value={nameInput}
               onkeydown={(e) => e.key === "Enter" && !e.isComposing && saveName()}
             />
-            <button class="btn primary" disabled={!nameInput.trim() || nameInput.trim() === sel.name || working} onclick={saveName}>
-              {sel.person == null ? "이름 붙이기" : "이름 바꾸기"}
+            <button
+              class="btn primary"
+              disabled={!nameInput.trim() || nameInput.trim() === sel.name || working || (sel.unsorted && !picked.size)}
+              onclick={saveName}
+            >
+              {sel.person != null ? "이름 바꾸기" : picked.size ? `고른 ${picked.size}개에 이름 붙이기` : "이름 붙이기"}
             </button>
             {#if named.some((n) => n.person !== sel!.person)}
               <select
-                disabled={working}
+                disabled={working || (sel.unsorted && !picked.size)}
                 onchange={(e) => {
                   const v = Number(e.currentTarget.value);
                   e.currentTarget.value = "";
@@ -455,7 +528,7 @@
                 고른 {picked.size}개 "이 사람 아님"
               </button>
               <button class="btn subtle" disabled={working} onclick={deletePerson}>이름 지우기</button>
-            {:else}
+            {:else if !sel.unsorted}
               <button
                 class="btn danger"
                 disabled={!picked.size || picked.size >= sel.faces.length || working}
@@ -469,7 +542,8 @@
           <p class="hint">
             얼굴을 클릭해 고르고, 두 번 클릭하면 사진을 크게 봅니다.
             {#if sel.person != null}노란 테두리는 자동으로 넣은 얼굴입니다 (맞으면 "모두 맞음", 틀리면 골라서 "이 사람 아님").
-            {:else}다른 사람 얼굴이 섞여 있으면 골라서 "빼기"를 누르세요. 맞는 얼굴만 골라 이름을 붙여도 됩니다.{/if}
+            {:else if sel.unsorted}같은 사람을 찾지 못했거나{report?.turned ? `, 옆모습이라 뺀(${report.turned}개)` : ""} 얼굴입니다. 같은 사람 얼굴을 골라 이름을 붙이거나 다른 인물로 보내세요.
+            {:else}같은 사람으로 묶었지만 아직 이름이 없습니다. 다른 사람 얼굴이 섞여 있으면 골라서 "빼기"를 누르세요. 맞는 얼굴만 골라 이름을 붙여도 됩니다.{/if}
           </p>
           <div
             class="scroller"
@@ -544,6 +618,21 @@
   }
   .spacer {
     flex: 1;
+  }
+  .opt {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .opt select {
+    padding: 2px 4px;
+    font-size: 12px;
+  }
+  .person.unsorted .name {
+    color: #f0c674;
+    font-weight: 600;
   }
   .check {
     display: flex;

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff", "ico"] }
+rusqlite = { version = "0.41.0", features = ["bundled"] }
 kamadak-exif = "0.6.1"
 anyhow = "1.0.104"
 isee-core = { version = "0.1.0", path = "../isee-core" }

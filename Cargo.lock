@@ -2281,8 +2281,10 @@ name = "isee-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "image",
  "isee-core",
  "kamadak-exif",
+ "rusqlite",
  "tract-onnx",
 ]
 
