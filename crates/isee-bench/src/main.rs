@@ -5,6 +5,7 @@
 //!   isee-bench similar <폴더>           특징값 계산 속도·묶기 정확도 측정
 //!   isee-bench gen-organize <폴더>      날짜·장소 정리용 사진 세트 (EXIF 날짜·GPS, 짝 파일, 동영상)
 //!   isee-bench organize <폴더> [큰 폴더]  날짜·위치 읽기 속도, 규칙별 폴더, 정리·되돌리기 시간
+//!   isee-bench group <얼굴 수> [사람 수]   얼굴 묶기 시간 (흉내 낸 지문, 단체 사진이 많은 폴더 크기)
 
 use isee_core::cache::ThumbCache;
 use isee_core::decode::{self, generic};
@@ -72,6 +73,10 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some("gen-groups") => gen_groups(Path::new(args.get(2).expect("초상 사진 폴더")), Path::new(args.get(3).expect("만들 폴더"))),
+        Some("group") => group_bench(
+            args.get(2).and_then(|v| v.parse().ok()).unwrap_or(10_000),
+            args.get(3).and_then(|v| v.parse().ok()).unwrap_or(150),
+        ),
         Some("faces") => faces_bench(Path::new(args.get(2).expect("모델 폴더")), Path::new(args.get(3).expect("사진 폴더"))),
         Some("place") => {
             // 좌표 → 지명 확인: isee-bench place 37.56,126.97 33.25,126.41 …
@@ -847,6 +852,57 @@ fn gen_groups(src: &Path, dir: &Path) -> anyhow::Result<()> {
 }
 
 /// 파일 이름 "사람_번호.jpg"를 정답으로 보고, 얼굴 찾기·지문 시간과 같은 사람/다른 사람 비슷함 분포를 잰다
+/// 사람마다 중심 지문을 두고, 얼굴은 중심 + 잡음 (같은 사람끼리 비슷함 약 0.4~0.7, 다른 사람 약 0)
+fn group_bench(n: usize, persons: usize) -> anyhow::Result<()> {
+    use isee_core::people::{FaceRow, group};
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f32 / (1u64 << 53) as f32
+    };
+    // 표준정규분포 (Box-Muller)
+    let mut gauss = move || {
+        let (a, b) = (rnd().max(1e-9), rnd());
+        (-2.0 * a.ln()).sqrt() * (std::f32::consts::TAU * b).cos()
+    };
+    let unit = |v: Vec<f32>| {
+        let l = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+        v.into_iter().map(|x| x / l).collect::<Vec<f32>>()
+    };
+    let centers: Vec<Vec<f32>> = (0..persons).map(|_| unit((0..128).map(|_| gauss()).collect())).collect();
+    let faces: Vec<FaceRow> = (0..n)
+        .map(|i| {
+            // 사람마다 나오는 횟수가 다르게 (앞쪽 사람이 많이)
+            let p = ((gauss().abs() * persons as f32 / 2.5) as usize).min(persons - 1);
+            let sigma = 0.7 + 1.0 * (i % 7) as f32 / 7.0;
+            let emb = unit(centers[p].iter().map(|c| c + gauss() * sigma / (128f32).sqrt()).collect());
+            FaceRow {
+                id: i as i64 + 1,
+                path: format!("/사진/{:05}.jpg", i / 8),
+                rect: [0.1, 0.1, 0.1, 0.1],
+                px: 40.0 + (i * 37 % 260) as f32,
+                emb,
+                person: None,
+                not_person: None,
+                q: 1.0,
+            }
+        })
+        .collect();
+    let t = Instant::now();
+    let r = group(faces, &[], &[], 0, 0);
+    let grouped: usize = r.groups.iter().map(|g| g.faces.len()).sum();
+    println!(
+        "얼굴 {n}개 · 사람 {persons}명 → 묶음 {}개 (묶인 얼굴 {grouped}, 혼자 {}) · 빠른 방식 {} · {:.0}ms",
+        r.groups.len(),
+        r.singles,
+        r.fast,
+        t.elapsed().as_secs_f64() * 1000.0
+    );
+    Ok(())
+}
+
 fn faces_bench(models: &Path, dir: &Path) -> anyhow::Result<()> {
     use std::collections::HashMap;
     use isee_core::faces::{Models, similarity_of};
@@ -899,7 +955,7 @@ fn faces_bench(models: &Path, dir: &Path) -> anyhow::Result<()> {
         for f in &files {
             let fname = f.file_name().unwrap().to_string_lossy().into_owned();
             let (iw, ih) = decode::dimensions(f).unwrap_or((1, 1));
-            for isee_core::people::Analyzed { face, px, emb, quality } in isee_core::people::analyze_one(&m, f)? {
+            for isee_core::people::Analyzed { face, px, emb, quality, .. } in isee_core::people::analyze_one(&m, f)? {
                 id += 1;
                 let who = match truth.get(&fname) {
                     Some(list) => {
@@ -922,7 +978,7 @@ fn faces_bench(models: &Path, dir: &Path) -> anyhow::Result<()> {
         }
         let analyze_ms = t.elapsed().as_secs_f64() * 1000.0 / files.len().max(1) as f64;
         let labeled = rows.iter().filter(|r| label.contains_key(&r.id)).count();
-        let r = group(rows, &[], files.len(), files.len());
+        let r = group(rows, &[], &[], files.len(), files.len());
         println!("\n분석(찾기+지문) 장당 {analyze_ms:.0}ms · 정답 얼굴 {truth_total}개 중 찾음 {} ({:.0}%)", found_truth.len(), 100.0 * found_truth.len() as f64 / truth_total.max(1) as f64);
         println!("자동 묶기: 묶음 {}개 · 혼자 {} · 작은 얼굴 {} · {:.1}ms", r.groups.len(), r.singles, r.small, r.ms);
         let (mut pure, mut total) = (0, 0);

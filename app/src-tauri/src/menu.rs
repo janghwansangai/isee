@@ -101,16 +101,12 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
     let trash = MenuItem::with_id(app, "trash", "휴지통으로 이동", true, None::<&str>)?;
     let (sep1, sep2) = (sep()?, sep()?);
     let close = PredefinedMenuItem::close_window(app, Some("창 닫기"))?;
-    // 윈도우는 앱 이름 메뉴가 없으므로 업데이트 확인을 파일 메뉴에 둔다
-    #[cfg(not(target_os = "macos"))]
-    let update = MenuItem::with_id(app, "check_update", "업데이트 확인…", true, None::<&str>)?;
-    #[allow(unused_mut)]
-    let mut file_items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
-        vec![&open_folder, &add_folders, &new_folder, &sep1, &reveal, &rename, &trash, &sep2];
-    #[cfg(not(target_os = "macos"))]
-    file_items.push(&update);
-    file_items.push(&close);
-    let file = Submenu::with_items(app, "파일", true, &file_items)?;
+    let file = Submenu::with_items(
+        app,
+        "파일",
+        true,
+        &[&open_folder, &add_folders, &new_folder, &sep1, &reveal, &rename, &trash, &sep2, &close],
+    )?;
     let edit = Submenu::with_items(
         app,
         "편집",
@@ -167,7 +163,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         "iSee",
         true,
         &[
-            &PredefinedMenuItem::about(app, Some("iSee 정보"), None)?,
+            &MenuItem::with_id(app, "about", "iSee 정보…", true, None::<&str>)?,
             &MenuItem::with_id(app, "check_update", "업데이트 확인…", true, None::<&str>)?,
             &sep()?,
             &PredefinedMenuItem::hide(app, Some("iSee 가리기"))?,
@@ -186,6 +182,24 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         &[
             &PredefinedMenuItem::minimize(app, Some("최소화"))?,
             &PredefinedMenuItem::maximize(app, Some("확대/축소"))?,
+        ],
+    )?);
+    // 도움말: 만든 사람·홈페이지·면책 조항 (맥은 정보·업데이트가 iSee 메뉴에도 있다)
+    let homepage = MenuItem::with_id(app, "homepage", "홈페이지 (hwansang.kr)", true, None::<&str>)?;
+    let disclaimer = MenuItem::with_id(app, "disclaimer", "면책 조항…", true, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    top.push(Submenu::with_items(app, "도움말", true, &[&homepage, &disclaimer])?);
+    #[cfg(not(target_os = "macos"))]
+    top.push(Submenu::with_items(
+        app,
+        "도움말",
+        true,
+        &[
+            &MenuItem::with_id(app, "about", "iSee 정보 (만든 사람)…", true, None::<&str>)?,
+            &homepage,
+            &disclaimer,
+            &sep()?,
+            &MenuItem::with_id(app, "check_update", "업데이트 확인…", true, None::<&str>)?,
         ],
     )?);
     let refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
@@ -453,6 +467,8 @@ pub fn on_event(app: &AppHandle, ev: MenuEvent) {
     } else if id.starts_with("kind_") || id.starts_with("sort_") || id.starts_with("show_") || id.starts_with("view_") || id == "culling" || id == "include_subfolders" {
         // 체크 항목을 눌렀지만 값이 그대로면 macOS가 바꾼 체크 표시를 되돌린다.
         sync_checks(&state.checks.lock(), &state.settings.lock());
+    } else if id == "homepage" {
+        let _ = crate::open_homepage();
     } else {
         let _ = app.emit("menu", id);
     }

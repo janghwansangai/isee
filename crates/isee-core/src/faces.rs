@@ -237,7 +237,19 @@ fn inside(a: &[f32; 4], b: &[f32; 4]) -> bool {
 
 /// 두 지문의 비슷함 (코사인, -1~1). SFace 기준 0.363 이상이면 같은 사람일 가능성이 높다.
 pub fn similarity_of(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+    // 8칸씩 따로 더해야 컴파일러가 한 번에 여러 칸(SIMD)으로 계산한다.
+    // 한 줄로 더하면 덧셈 순서를 지키느라 한 칸씩 해서 얼굴이 많을 때 묶기가 몇 배 느리다.
+    let n = a.len().min(b.len());
+    let (a, b) = (&a[..n], &b[..n]);
+    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let tail: f32 = ca.remainder().iter().zip(cb.remainder()).map(|(x, y)| x * y).sum();
+    let mut acc = [0f32; 8];
+    for (x, y) in ca.zip(cb) {
+        for k in 0..8 {
+            acc[k] += x[k] * y[k];
+        }
+    }
+    acc.iter().sum::<f32>() + tail
 }
 
 fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {

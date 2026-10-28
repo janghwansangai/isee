@@ -113,19 +113,24 @@ pub fn handle(ctx: UriSchemeContext<'_, Wry>, req: Request<Vec<u8>>, responder: 
             );
         }
         "/face" => {
+            // 저장된 썸네일을 찾는 것도 화면 스레드 밖에서. 없으면 얼굴 썸네일 일꾼(2개)이 차례로 만든다.
             let id = num("id");
             let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
-                let state = app.state::<AppState>();
-                responder.respond(match crate::face_thumb(&state, id) {
-                    Some(b) => Response::builder()
-                        .header("Content-Type", "image/jpeg")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .header("Cache-Control", "max-age=3600")
-                        .body(b)
-                        .unwrap(),
-                    None => not_found(),
-                });
+            tauri::async_runtime::spawn_blocking(move || {
+                app.state::<AppState>().face_crops.request(
+                    id,
+                    Box::new(move |b| {
+                        responder.respond(match b {
+                            Some(b) => Response::builder()
+                                .header("Content-Type", "image/jpeg")
+                                .header("Access-Control-Allow-Origin", "*")
+                                .header("Cache-Control", "max-age=3600")
+                                .body(b)
+                                .unwrap(),
+                            None => not_found(),
+                        })
+                    }),
+                );
             });
         }
         "/file" => {

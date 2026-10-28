@@ -58,8 +58,10 @@ pub struct AppState {
     /// 얼굴별 분류 (8단계, 선택 모듈)
     pub faces: FaceService,
     models_dir: PathBuf,
-    /// 인물 화면 얼굴 썸네일 (얼굴 번호 → JPEG)
-    face_thumbs: Mutex<HashMap<i64, Vec<u8>>>,
+    /// 인물 화면 얼굴 썸네일 (저장해 둔 것, 없으면 사진을 몇 장씩만 읽어 만든다)
+    pub face_crops: people::CropService,
+    /// 인물 묶기는 한 번에 하나만 (얼굴이 많을 때 겹쳐 계산하면 메모리가 늘어난다)
+    report_lock: Mutex<()>,
     /// 날짜·장소별 정리: 마지막으로 읽은 사진들 (규칙을 바꿀 때 다시 읽지 않게)
     organize_items: Mutex<Vec<organize::Item>>,
     /// 남김·버림·별점
@@ -581,13 +583,17 @@ struct AnalysisEstimate {
     /// 얼굴(설치했을 때만): 새로 분석할 수, 어림 시간
     faces_todo: usize,
     faces_ms: f64,
+    /// 클라우드 드라이브 안의 폴더면 그 이름 (예: "구글 드라이브")
+    cloud_drive: Option<&'static str>,
 }
 
 #[tauri::command]
 async fn analysis_estimate(app: AppHandle, path: String, extra: Option<Vec<String>>, recursive: Option<bool>) -> CmdResult<AnalysisEstimate> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let reqs = scope_images(&state, &Scope::new(path, extra, recursive))?;
+        let sc = Scope::new(path, extra, recursive);
+        let reqs = scope_images(&state, &sc)?;
+        let cloud_drive = sc.roots().iter().find_map(|r| listing::cloud_drive(r));
         let (similar_todo, cloud) = state.analysis.pending(&reqs);
         let faces_todo = if isee_core::faces::installed(&state.models_dir) {
             reqs.iter().filter(|r| !state.faces.db().analyzed(r) && !listing::is_online_only(Path::new(&r.path))).count()
@@ -605,6 +611,7 @@ async fn analysis_estimate(app: AppHandle, path: String, extra: Option<Vec<Strin
             similar_ms: similar_todo as f64 * 30.0 / sim_workers,
             faces_todo,
             faces_ms: faces_todo as f64 * 150.0 / face_workers,
+            cloud_drive,
         })
     })
     .await
@@ -900,11 +907,18 @@ fn faces_stop(state: State<'_, AppState>) {
     state.faces.analyze(Vec::new());
 }
 
+/// 인물 화면을 닫으면 아직 만들지 못한 얼굴 썸네일 요청은 버린다
+#[tauri::command]
+fn faces_crops_cancel(state: State<'_, AppState>) {
+    state.face_crops.cancel();
+}
+
 /// 사람별 묶음 (이 폴더의 얼굴 + 이름 붙은 사람 전체)
 #[tauri::command]
 async fn faces_report(app: AppHandle, folder: String, recursive: bool, extra: Option<Vec<String>>) -> CmdResult<people::Report> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _one = state.report_lock.lock();
         let reqs = scope_images(&state, &Scope::new(folder, extra, Some(recursive))).unwrap_or_default();
         let total = reqs.len();
         let db = state.faces.db();
@@ -954,7 +968,7 @@ fn faces_delete_person(state: State<'_, AppState>, person: i64) -> CmdResult<()>
 #[tauri::command]
 fn faces_clear(state: State<'_, AppState>) -> CmdResult<()> {
     state.faces.analyze(Vec::new());
-    state.face_thumbs.lock().clear();
+    state.face_crops.cancel();
     state.faces.db().clear().map_err(err)
 }
 
@@ -1044,21 +1058,6 @@ async fn faces_organize(
     })
     .await
     .map_err(err)
-}
-
-/// 인물 화면용 얼굴 썸네일: 얼굴 주변을 정사각형으로 잘라 192px JPEG
-pub fn face_thumb(state: &AppState, id: i64) -> Option<Vec<u8>> {
-    if let Some(b) = state.face_thumbs.lock().get(&id) {
-        return Some(b.clone());
-    }
-    let f = state.faces.db().face(id)?;
-    let bytes = people::face_crop(&f, 192)?;
-    let mut cache = state.face_thumbs.lock();
-    if cache.len() > 600 {
-        cache.clear();
-    }
-    cache.insert(id, bytes.clone());
-    Some(bytes)
 }
 
 // ───────────────────────── 편집기 (6단계) ─────────────────────────
@@ -1218,6 +1217,41 @@ fn prune_undo_dir(dir: &Path) {
     let extra = subs.len().saturating_sub(20);
     for p in subs.into_iter().take(extra) {
         let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+/// 만든 사람 홈페이지 (메뉴 "홈페이지", 정보 창)
+pub const HOMEPAGE: &str = "https://hwansang.kr";
+/// 프로그램 오류 기록 (앱 데이터 폴더)
+const ERROR_LOG: &str = "errors.log";
+
+/// 홈페이지를 기본 브라우저로 연다 (주소는 고정, 화면에서 다른 주소를 넘길 수 없다)
+#[tauri::command]
+fn open_homepage() -> CmdResult<()> {
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(HOMEPAGE).spawn();
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg(HOMEPAGE).spawn();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let r = std::process::Command::new("xdg-open").arg(HOMEPAGE).spawn();
+    r.map(|_| ()).map_err(err)
+}
+
+#[derive(Serialize)]
+struct AppInfo {
+    version: String,
+    homepage: &'static str,
+    /// 오류 기록 파일 (있을 때만)
+    error_log: Option<String>,
+}
+
+#[tauri::command]
+fn app_info(app: AppHandle) -> AppInfo {
+    let log = app.path().app_data_dir().ok().map(|d| d.join(ERROR_LOG)).filter(|p| p.exists());
+    AppInfo {
+        version: app.package_info().version.to_string(),
+        homepage: HOMEPAGE,
+        error_log: log.map(|p| p.to_string_lossy().into_owned()),
     }
 }
 
@@ -1452,6 +1486,22 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             let data_dir = app.path().app_data_dir()?;
             let cache_dir = app.path().app_cache_dir()?;
+            // 프로그램 안에서 오류(패닉)가 나면 앱 데이터 폴더의 errors.log에 남긴다 (꺼진 원인을 찾을 수 있게)
+            {
+                let log = data_dir.join(ERROR_LOG);
+                let version = app.package_info().version.to_string();
+                let default = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    use std::io::Write;
+                    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    let thread = std::thread::current().name().unwrap_or("이름 없음").to_string();
+                    let bt = std::backtrace::Backtrace::force_capture();
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+                        let _ = writeln!(f, "[{secs}] iSee {version} · {} · 스레드 {thread}\n{info}\n{bt}\n", std::env::consts::OS);
+                    }
+                    default(info);
+                }));
+            }
             let settings_path = config_dir.join("settings.json");
             let settings = Settings::load(&settings_path);
             let cache = ThumbCache::open(Some(&cache_dir.join("thumbs.db")), 20_000)?;
@@ -1499,6 +1549,8 @@ pub fn run() {
                     let _ = handle.emit("analysis-progress", (done, total));
                 }));
             }
+            // 얼굴 썸네일을 만들 때 사진 읽기는 2개씩만 (메모리를 일정하게)
+            let face_crops = people::CropService::new(faces.db().clone(), 2);
             let (menu, checks) = menu::build(handle, &settings)?;
             app.set_menu(menu)?;
             app.on_menu_event(menu::on_event);
@@ -1520,7 +1572,8 @@ pub fn run() {
                 organize_items: Mutex::new(Vec::new()),
                 faces,
                 models_dir: data_dir.join("models"),
-                face_thumbs: Mutex::new(HashMap::new()),
+                face_crops,
+                report_lock: Mutex::new(()),
                 marks: Marks::open(Some(&data_dir.join("marks.db")))?,
                 settings: Mutex::new(settings),
                 settings_path,
@@ -1582,6 +1635,9 @@ pub fn run() {
             faces_install,
             faces_analyze,
             faces_stop,
+            faces_crops_cancel,
+            open_homepage,
+            app_info,
             faces_report,
             faces_name,
             faces_reject,

@@ -216,7 +216,7 @@ class Store {
     const sc = this.scope();
     const st = await api.facesStatus().catch(() => null);
     const faces = !!st?.installed;
-    if (!(await this.confirmAnalysis(sc, faces))) return;
+    if (!(await this.confirmAnalysis(sc, faces ? "both" : "similar"))) return;
     try {
       const [done, total] = await api.analyzeFolder(sc);
       if (faces) await api.facesAnalyze(sc).catch(() => undefined);
@@ -233,38 +233,64 @@ class Store {
 
   /** 새로 분석할 사진이 이보다 많으면 시작 전에 걸릴 시간을 알리고 묻는다 */
   static readonly BIG_ANALYSIS = 2000;
+  /** 클라우드 드라이브 폴더에서 이보다 많이 분석하면 내려받아 작업하라고 안내한다 */
+  static readonly CLOUD_HINT = 300;
 
-  /** 사진이 많으면 분석 전에 묻는다. faces: 얼굴 분석도 할 때. 진행하면 true. */
-  async confirmAnalysis(sc: Scope, faces = false): Promise<boolean> {
+  /** 사진이 많거나 클라우드 드라이브 폴더면 분석 전에 묻는다. what: 할 분석. 진행하면 true. */
+  async confirmAnalysis(sc: Scope, what: "similar" | "faces" | "both" = "similar"): Promise<boolean> {
     let est;
     try {
       est = await api.analysisEstimate(sc);
     } catch {
       return true;
     }
-    const todo = Math.max(est.similar_todo, faces ? est.faces_todo : 0);
-    if (todo <= Store.BIG_ANALYSIS) return true;
-    const lines = [`· 비슷한 사진 찾기: ${est.similar_todo.toLocaleString()}장, ${fmtDuration(est.similar_ms)}`];
-    if (faces && est.faces_todo) lines.push(`· 얼굴 찾기: ${est.faces_todo.toLocaleString()}장, ${fmtDuration(est.faces_ms)}`);
-    return ask(
+    const similar = what !== "faces" ? est.similar_todo : 0;
+    const faces = what !== "similar" ? est.faces_todo : 0;
+    const todo = Math.max(similar, faces);
+    const cloudy = !!est.cloud_drive && todo >= Store.CLOUD_HINT;
+    if (todo <= Store.BIG_ANALYSIS && !cloudy) return true;
+    const lines: string[] = [];
+    if (similar) lines.push(`· 비슷한 사진 찾기: ${similar.toLocaleString()}장, ${fmtDuration(est.similar_ms)}`);
+    if (faces) lines.push(`· 얼굴 찾기: ${faces.toLocaleString()}장, ${fmtDuration(est.faces_ms)}`);
+    let text =
       `사진 ${est.total.toLocaleString()}장 중 ${todo.toLocaleString()}장을 새로 분석합니다.\n${lines.join("\n")}\n\n` +
-        `분석은 뒤에서 계속되므로 다른 사진을 봐도 되고, 앱을 닫았다가 다시 열면 분석한 곳 다음부터 이어서 합니다. ` +
-        `보는 동안 느리면 백그라운드 작업 창에서 잠시 멈출 수 있습니다.` +
-        (est.cloud ? `\n\n클라우드에만 있는 ${est.cloud.toLocaleString()}장은 내려받지 않으므로 분석하지 않습니다.` : ""),
-      { title: "사진이 많습니다", kind: "warning", okLabel: "분석 시작", cancelLabel: "취소" },
-    );
+      `분석은 뒤에서 계속되므로 다른 사진을 봐도 되고, 앱을 닫았다가 다시 열면 분석한 곳 다음부터 이어서 합니다. ` +
+      `보는 동안 느리면 백그라운드 작업 창에서 잠시 멈출 수 있습니다.`;
+    if (cloudy)
+      text +=
+        `\n\n이 폴더는 ${est.cloud_drive}에 있어 사진을 한 장씩 내려받으며 분석합니다. 인터넷 상태에 따라 아주 오래 걸리거나 멈춘 것처럼 보일 수 있습니다.\n` +
+        `빠르고 안정적으로 하려면 ${est.cloud_drive}에서 이 폴더를 "오프라인 사용(항상 이 기기에 보관)"으로 바꾸거나, ` +
+        `컴퓨터 폴더로 복사해 정리한 뒤 다시 올려 주세요.`;
+    if (est.cloud) text += `\n\n클라우드에만 있는 ${est.cloud.toLocaleString()}장은 내려받지 않으므로 분석하지 않습니다.`;
+    return ask(text, {
+      title: cloudy ? `${est.cloud_drive} 폴더입니다` : "사진이 많습니다",
+      kind: "warning",
+      okLabel: "분석 시작",
+      cancelLabel: "취소",
+    });
   }
 
   /** 너무 많아 일부만 모았을 때 (프로그램이 멈추거나 메모리가 모자라지 않게 한도에서 멈춤) */
   private warnedAt = "";
   private warnTruncated(n: number) {
+    // 하위 폴더 때문에 너무 많아졌으면 하위 폴더 보기를 끄고 이 폴더만 다시 읽는다
+    if (this.settings.include_subfolders) {
+      message(
+        `하위 폴더까지 모으니 파일이 ${n.toLocaleString()}개를 넘습니다.\n\n` +
+          `프로그램이 느려지거나 멈추지 않도록 "하위 폴더 사진도 보기"를 껐습니다. ` +
+          `하위 폴더는 하나씩 열어 보거나, 필요한 폴더만 "다른 폴더 함께 보기"로 더해 주세요.`,
+        { title: "사진이 너무 많습니다", kind: "warning", okLabel: "확인" },
+      );
+      this.setSettings({ include_subfolders: false });
+      return;
+    }
     const key = JSON.stringify(this.scope());
     if (this.warnedAt === key) return;
     this.warnedAt = key;
     message(
       `파일이 너무 많아 처음 ${n.toLocaleString()}개까지만 보여 줍니다.\n\n` +
-        `속도와 안정을 위해 "하위 폴더 포함"을 끄거나, 더 작은 폴더를 열거나, 함께 보는 폴더를 줄여 주세요.`,
-      { title: "사진이 너무 많습니다", kind: "warning" },
+        `속도와 안정을 위해 더 작은 폴더를 열거나, 함께 보는 폴더를 줄여 주세요.`,
+      { title: "사진이 너무 많습니다", kind: "warning", okLabel: "확인" },
     );
   }
 

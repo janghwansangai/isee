@@ -47,6 +47,33 @@ pub fn is_online_only(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| online_only(&m))
 }
 
+/// 클라우드 드라이브(구글 드라이브·OneDrive·iCloud·Dropbox) 안의 경로면 그 이름 (안내용).
+/// 이런 폴더는 사진을 읽을 때마다 내려받을 수 있어, 많이 분석하면 오래 걸리고 불안정하다.
+/// 윈도우의 구글 드라이브는 가상 드라이브(G:)라 파일 속성으로는 알 수 없어서 경로로 본다.
+pub fn cloud_drive(path: &Path) -> Option<&'static str> {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let names: Vec<String> = path.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
+    let has = |n: &str| names.iter().any(|c| c == n);
+    if s.contains("/Library/CloudStorage/GoogleDrive")
+        || ["my drive", "내 드라이브", "shared drives", "공유 드라이브", "google drive"].iter().any(|n| has(n))
+    {
+        return Some("구글 드라이브");
+    }
+    if s.contains("/Library/CloudStorage/OneDrive") || names.iter().any(|c| c.starts_with("onedrive")) {
+        return Some("OneDrive");
+    }
+    if s.contains("/Library/Mobile Documents/") || has("iclouddrive") || has("icloud drive") {
+        return Some("iCloud Drive");
+    }
+    if s.contains("/Library/CloudStorage/Dropbox") || has("dropbox") {
+        return Some("Dropbox");
+    }
+    if s.contains("/Library/CloudStorage/") {
+        return Some("클라우드 드라이브");
+    }
+    None
+}
+
 fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
     meta.modified()
         .ok()
@@ -414,5 +441,16 @@ mod tests {
         assert!(t.truncated);
         std::fs::remove_dir_all(&d).unwrap();
         std::fs::remove_dir_all(&other).unwrap();
+    }
+
+    #[test]
+    fn cloud_drives_are_recognized_by_path() {
+        let c = |p: &str| cloud_drive(Path::new(p));
+        assert_eq!(c("/Users/a/Library/CloudStorage/GoogleDrive-a@b.com/내 드라이브/사진"), Some("구글 드라이브"));
+        assert_eq!(c("G:/My Drive/소풍"), Some("구글 드라이브"));
+        assert_eq!(c("/Users/a/Library/CloudStorage/OneDrive-Personal/Pictures"), Some("OneDrive"));
+        assert_eq!(c("/Users/a/Library/Mobile Documents/com~apple~CloudDocs/a"), Some("iCloud Drive"));
+        assert_eq!(c("/Users/a/Dropbox/사진"), Some("Dropbox"));
+        assert_eq!(c("/Users/a/Pictures/드라이브 사진"), None);
     }
 }

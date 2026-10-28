@@ -32,6 +32,7 @@
   import VideoPlayer from "./components/VideoPlayer.svelte";
   import PeopleView from "./components/PeopleView.svelte";
   import BgPanel from "./components/BgPanel.svelte";
+  import AboutDialog from "./components/AboutDialog.svelte";
   import { checkForUpdate, scheduleUpdateCheck } from "./lib/update";
 
   let cols = $state(1);
@@ -43,6 +44,8 @@
   let peopleView = $state<ReturnType<typeof PeopleView>>();
   let stats = $state<Stats | null>(null);
   let bgOpen = $state(false);
+  /** iSee 정보 창 (만든 사람·면책 조항) */
+  let aboutOpen = $state<"about" | "disclaimer" | null>(null);
   /** 백그라운드에서 뭔가 하고 있는지 (상태 표시줄 문구) */
   let bgLabel = $derived.by(() => {
     const b = stats?.bg;
@@ -120,7 +123,7 @@
   }
 
   // 비교·비슷한 사진 화면이 덮고 있을 때 메뉴로 받아도 되는 것 (보이지 않는 그리드 선택을 지우거나 옮기지 않게)
-  const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update", "bg_panel", "analyze_ahead"]);
+  const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update", "bg_panel", "analyze_ahead", "about", "disclaimer"]);
 
   function onMenu(id: string) {
     // 편집기에서는 실행 취소가 편집 단계를 되돌린다
@@ -194,6 +197,10 @@
         return store.pickAddFolders();
       case "check_update":
         return checkForUpdate(true);
+      case "about":
+      case "disclaimer":
+        aboutOpen = id;
+        return;
       case "shell_install":
       case "shell_uninstall":
         return toggleShell(id === "shell_install");
@@ -221,6 +228,13 @@
   const MAC_MENU_KEYS = new Set(["z", "a", "o", "n", "[", "]", "ArrowUp", "=", "-"]);
 
   function onKey(e: KeyboardEvent) {
+    if (aboutOpen) {
+      if (e.key === "Escape" || e.key === "Enter") {
+        e.preventDefault();
+        aboutOpen = null;
+      }
+      return;
+    }
     if (store.dialog || inTextField()) return;
     const mod = e.metaKey || e.ctrlKey;
     if (store.video) {
@@ -680,6 +694,10 @@
 
 {#if bgOpen}
   <BgPanel bg={stats?.bg ?? null} onclose={() => (bgOpen = false)} />
+{/if}
+
+{#if aboutOpen}
+  <AboutDialog focus={aboutOpen} onclose={() => (aboutOpen = null)} />
 {/if}
 
 <Dialogs />

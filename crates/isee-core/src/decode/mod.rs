@@ -40,8 +40,18 @@ fn generic_first(path: &Path) -> bool {
     matches!(ext(path).as_str(), "png" | "tif" | "tiff" | "bmp")
 }
 
+/// 깨진 파일 때문에 디코더가 멈추면(패닉) 그 파일만 실패로 돌려준다.
+/// 사진 한 장 때문에 프로그램 전체가 꺼지지 않게 한다 (보통 때는 비용 없음).
+fn guarded<T>(f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(anyhow::anyhow!("파일을 읽다가 오류가 났습니다 (깨진 파일일 수 있음)")))
+}
+
 /// 그리드용 썸네일 (긴 변 max_px 이하, JPEG/PNG로 인코딩).
 pub fn thumbnail(path: &Path, max_px: u32) -> anyhow::Result<Encoded> {
+    guarded(|| thumbnail_inner(path, max_px))
+}
+
+fn thumbnail_inner(path: &Path, max_px: u32) -> anyhow::Result<Encoded> {
     use crate::formats::{Kind, kind_of};
     let kind = kind_of(path);
     // 동영상·PDF·문서, 그리고 아직 내려받지 않은 클라우드 파일은 OS 썸네일 엔진으로 (내용을 읽지 않는다)
@@ -67,6 +77,10 @@ pub fn thumbnail(path: &Path, max_px: u32) -> anyhow::Result<Encoded> {
 
 /// 뷰어용 픽셀: 긴 변 max_px 이하 (0이면 원본 크기). 회전 방향은 적용되어 있다.
 pub fn screen_rgba(path: &Path, max_px: u32) -> anyhow::Result<Pixels> {
+    guarded(|| screen_rgba_inner(path, max_px))
+}
+
+fn screen_rgba_inner(path: &Path, max_px: u32) -> anyhow::Result<Pixels> {
     #[cfg(target_os = "macos")]
     if let Some(request) = imageio_screen_request(path, max_px)
         && let Ok(p) = imageio::screen_rgba(path, request)

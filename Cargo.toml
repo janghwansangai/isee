@@ -14,4 +14,6 @@ opt-level = 3
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# 깨진 사진 하나 때문에 디코더가 멈춰도(패닉) 프로그램 전체가 꺼지지 않도록 되감기를 쓴다
+# (decode::guarded가 그 파일만 실패로 처리한다)
+panic = "unwind"

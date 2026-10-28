@@ -36,6 +36,44 @@
   let named = $derived((report?.groups ?? []).filter((g) => g.person != null));
   let analyzing = $derived(progress[1] > 0 && progress[0] < progress[1]);
 
+  // ───── 보이는 부분만 그리기 ─────
+  // 얼굴이 수천 개여도 화면에 보이는 줄만 만들어, 썸네일도 보이는 것만 요청한다
+  const FACE_W = 120;
+  const FACE_H = 142;
+  const GAP = 10;
+  const ROW_H = FACE_H + GAP;
+  /** 왼쪽 인물 목록 한 줄 */
+  const ITEM_H = 56;
+  const OVERSCAN = 2;
+  let faceScroll = $state<HTMLElement>();
+  let faceY = $state(0);
+  let faceH = $state(0);
+  let faceW = $state(0);
+  let listY = $state(0);
+  let listH = $state(0);
+  let cols = $derived(Math.max(1, Math.floor((faceW + GAP) / (FACE_W + GAP))));
+  let shownFaces = $derived.by(() => {
+    const faces = sel?.faces ?? [];
+    const first = Math.max(0, Math.floor(faceY / ROW_H) - OVERSCAN) * cols;
+    const last = Math.min(faces.length, (Math.ceil((faceY + faceH) / ROW_H) + OVERSCAN) * cols);
+    return faces.slice(first, last).map((f, k) => ({ f, i: first + k }));
+  });
+  let shownGroups = $derived.by(() => {
+    const groups = report?.groups ?? [];
+    const first = Math.max(0, Math.floor(listY / ITEM_H) - OVERSCAN * 2);
+    const last = Math.min(groups.length, Math.ceil((listY + listH) / ITEM_H) + OVERSCAN * 2);
+    return groups.slice(first, last).map((g, k) => ({ g, i: first + k }));
+  });
+
+  // 다른 묶음을 고르면 얼굴 목록을 맨 위로
+  $effect(() => {
+    void selKey;
+    untrack(() => {
+      if (faceScroll) faceScroll.scrollTop = 0;
+      faceY = 0;
+    });
+  });
+
   // 고른 묶음이 바뀌면 이름 칸을 맞춘다
   $effect(() => {
     const g = sel;
@@ -48,7 +86,17 @@
   // ───── 보고서 ─────
   let timer = 0;
   let lastAt = 0;
-  async function refresh() {
+  // 묶기는 한 번에 하나만: 계산하는 동안 다시 부르면 끝난 뒤 한 번만 더 한다
+  // (얼굴이 많으면 묶기가 몇 초 걸리는데, 그사이 요청이 쌓이면 메모리가 늘어 멈출 수 있다)
+  let chain: Promise<void> = Promise.resolve();
+  let queued = 0;
+  function refresh(): Promise<void> {
+    if (queued > 1) return chain;
+    queued++;
+    chain = chain.then(load).finally(() => queued--);
+    return chain;
+  }
+  async function load() {
     try {
       const r = await api.facesReport(scope);
       report = r;
@@ -77,6 +125,8 @@
   }
 
   async function start() {
+    // 사진이 아주 많거나 클라우드 드라이브 폴더면 먼저 알린다
+    if (!(await store.confirmAnalysis(scope, "faces"))) return;
     try {
       progress = await api.facesAnalyze(scope);
       await refresh();
@@ -109,6 +159,8 @@
       alive = false;
       un.forEach((p) => p.then((f) => f()));
       clearTimeout(timer);
+      // 아직 만들지 못한 얼굴 썸네일은 더 만들지 않는다
+      api.facesCropsCancel().catch(() => undefined);
     };
   });
 
@@ -345,19 +397,21 @@
       </div>
     {/if}
     <div class="main">
-      <aside class="list">
+      <aside class="list" bind:clientHeight={listH} onscroll={(e) => (listY = e.currentTarget.scrollTop)}>
         {#if report && !report.groups.length}
           <p class="empty">{analyzing ? "얼굴을 찾는 대로 나타납니다…" : "묶을 얼굴이 없습니다."}</p>
         {/if}
-        {#each report?.groups ?? [] as g (keyOf(g))}
-          <button class="person" class:on={keyOf(g) === selKey} onclick={() => (selKey = keyOf(g))}>
-            <img src={faceUrl(g.cover)} alt="" loading="lazy" />
-            <span class="info">
-              <span class="name" class:unnamed={!g.name}>{title(g)}</span>
-              <span class="count">사진 {g.photos}장{g.auto ? ` · 확인 필요 ${g.auto}` : ""}</span>
-            </span>
-          </button>
-        {/each}
+        <div class="persons" style="height:{(report?.groups.length ?? 0) * ITEM_H}px">
+          {#each shownGroups as { g, i } (keyOf(g))}
+            <button class="person" style="top:{i * ITEM_H}px" class:on={keyOf(g) === selKey} onclick={() => (selKey = keyOf(g))}>
+              <img src={faceUrl(g.cover)} alt="" />
+              <span class="info">
+                <span class="name" class:unnamed={!g.name}>{title(g)}</span>
+                <span class="count">사진 {g.photos}장{g.auto ? ` · 확인 필요 ${g.auto}` : ""}</span>
+              </span>
+            </button>
+          {/each}
+        </div>
         {#if report && (report.singles || report.small)}
           <p class="note">한 번만 나온 얼굴 {report.singles}개, 너무 작은 얼굴 {report.small}개는 묶지 않았습니다.</p>
         {/if}
@@ -417,20 +471,29 @@
             {#if sel.person != null}노란 테두리는 자동으로 넣은 얼굴입니다 (맞으면 "모두 맞음", 틀리면 골라서 "이 사람 아님").
             {:else}다른 사람 얼굴이 섞여 있으면 골라서 "빼기"를 누르세요. 맞는 얼굴만 골라 이름을 붙여도 됩니다.{/if}
           </p>
-          <div class="faces">
-            {#each sel.faces as f (f.id)}
-              <button
-                class="face"
-                class:picked={picked.has(f.id)}
-                class:auto={sel.person != null && f.person == null}
-                title={baseName(f.path)}
-                onclick={() => togglePick(f.id)}
-                ondblclick={() => openPhoto(f.path)}
-              >
-                <img src={faceUrl(f.id)} alt="" loading="lazy" />
-                <span class="fname">{baseName(f.path)}</span>
-              </button>
-            {/each}
+          <div
+            class="scroller"
+            bind:this={faceScroll}
+            bind:clientHeight={faceH}
+            bind:clientWidth={faceW}
+            onscroll={(e) => (faceY = e.currentTarget.scrollTop)}
+          >
+            <div class="faces" style="height:{Math.ceil(sel.faces.length / cols) * ROW_H}px">
+              {#each shownFaces as { f, i } (f.id)}
+                <button
+                  class="face"
+                  style="left:{(i % cols) * (FACE_W + GAP)}px; top:{Math.floor(i / cols) * ROW_H}px"
+                  class:picked={picked.has(f.id)}
+                  class:auto={sel.person != null && f.person == null}
+                  title={baseName(f.path)}
+                  onclick={() => togglePick(f.id)}
+                  ondblclick={() => openPhoto(f.path)}
+                >
+                  <img src={faceUrl(f.id)} alt="" />
+                  <span class="fname">{baseName(f.path)}</span>
+                </button>
+              {/each}
+            </div>
           </div>
         {/if}
       </section>
@@ -557,8 +620,14 @@
     border-right: 1px solid var(--border);
     background: var(--panel);
   }
+  .persons {
+    position: relative;
+  }
   .person {
-    width: 100%;
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 56px;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -610,8 +679,19 @@
   .detail {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 0 0 16px;
+  }
+  .detail > .head,
+  .detail > .hint {
+    padding-right: 16px;
+  }
+  .scroller {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding: 12px 16px;
+    padding-bottom: 12px;
   }
   .head {
     display: flex;
@@ -632,12 +712,12 @@
     margin: 8px 0 12px;
   }
   .faces {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
+    position: relative;
   }
   .face {
+    position: absolute;
     width: 120px;
+    height: 142px;
     display: flex;
     flex-direction: column;
     gap: 4px;

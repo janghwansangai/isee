@@ -130,6 +130,15 @@ export interface AnalysisEstimate {
   similar_ms: number;
   faces_todo: number;
   faces_ms: number;
+  /** 클라우드 드라이브 안의 폴더면 그 이름 (예: "구글 드라이브") */
+  cloud_drive: string | null;
+}
+
+export interface AppInfo {
+  version: string;
+  homepage: string;
+  /** 오류 기록 파일 (있을 때만) */
+  error_log: string | null;
 }
 
 // ───── 날짜·장소별 정리 (5단계) ─────
@@ -375,6 +384,9 @@ export const api = {
   facesAnalyze: (sc: Scope) =>
     invoke<[number, number]>("faces_analyze", { folder: sc.path, recursive: sc.recursive, extra: sc.extra }),
   facesStop: () => invoke("faces_stop"),
+  facesCropsCancel: () => invoke("faces_crops_cancel"),
+  openHomepage: () => invoke("open_homepage"),
+  appInfo: () => invoke<AppInfo>("app_info"),
   facesReport: (sc: Scope) =>
     invoke<PeopleReport>("faces_report", { folder: sc.path, recursive: sc.recursive, extra: sc.extra }),
   facesName: (faces: number[], person: number | null, name: string | null) =>
