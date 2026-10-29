@@ -42,6 +42,12 @@
 - **윈도우** 10·11: `iSee_…_x64-setup.exe`를 실행합니다 (관리자 권한 필요 없음). SmartScreen 경고가 뜨면 **추가 정보 › 실행**을 누릅니다.
 - 새 버전이 나오면 앱이 실행 15초 뒤(하루 한 번) 알려 주고, 누르면 받아서 다시 시작합니다. 메뉴 iSee(윈도우는 도움말) › **업데이트 확인…**으로 직접 확인할 수도 있습니다. 업데이트 파일은 서명을 확인한 뒤에만 설치합니다.
 
+## 소개 사이트
+
+**https://isee-app.janhan97.workers.dev** (Cloudflare). 원본은 `site/` (그림은 모두 SVG로 그려서 학생 사진을 쓰지 않음).
+내려받기 주소·버전·크기는 방문할 때 GitHub(isee-releases 최신 릴리스)에서 가져오므로, 새 버전을 내도 사이트는 고치지 않아도 됩니다.
+고친 뒤 올리기: 저장소 맨 위에서 `npx wrangler deploy` (`wrangler.jsonc`가 `site` 폴더만 올리고, 버전별 미리 보기 주소는 꺼 둠).
+
 ## 새 버전 내보내기 (개발자용)
 
 1. `app/src-tauri/tauri.conf.json`과 맨 위 `Cargo.toml`(workspace.package)의 `version`을 올리고 커밋합니다.

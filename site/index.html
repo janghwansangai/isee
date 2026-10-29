@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>iSee — 사진을 빠르게 보고, 고르고, 정리하는 무료 프로그램</title>
+<meta name="description" content="iSee(아이씨)는 윈도우·맥에서 사진을 아주 빠르게 보고, 남길 사진을 고르고, 비슷한 사진·인물·날짜별로 정리해 주는 무료 프로그램이에요." />
+<meta property="og:title" content="iSee — 사진 정리, 이제 쉽고 빠르게!" />
+<meta property="og:description" content="사진을 빠르게 보고, 고르고, 정리하는 무료 프로그램 (윈도우·맥)" />
+<meta property="og:image" content="/assets/icon.png" />
+<meta property="og:type" content="website" />
+<meta name="theme-color" content="#16285c" />
+<link rel="icon" type="image/png" href="/assets/favicon.png" />
+<link rel="apple-touch-icon" href="/assets/icon.png" />
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+<style>
+  :root {
+    --bg: #f6f8fc;
+    --bg2: #edf2fb;
+    --card: #ffffff;
+    --text: #18202f;
+    --dim: #4f5a6d;
+    --faint: #8892a4;
+    --line: #e2e8f1;
+    --brand: #3a78ff;
+    --brand-soft: #e6eeff;
+    --teal: #1fa5b3;
+    --navy: #16285c;
+    --ok: #1fae78;
+    --no: #f05a57;
+    --star: #ffad1f;
+    --shadow: 0 18px 50px rgba(22, 40, 92, 0.12);
+    --radius: 22px;
+    --win: #1c1d22;
+    --win-side: #23252b;
+    --win-line: #30323a;
+    --win-text: #e6e7eb;
+    --win-dim: #9a9ca6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1117;
+      --bg2: #131823;
+      --card: #181e29;
+      --text: #eef2f8;
+      --dim: #b2bccd;
+      --faint: #7e889a;
+      --line: #263042;
+      --brand: #5b8fff;
+      --brand-soft: #1b2a4d;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    word-break: keep-all;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--brand); }
+  img { max-width: 100%; }
+  .wrap { width: min(1120px, 100% - 40px); margin: 0 auto; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  /* ───── 머리 ───── */
+  header.top {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: saturate(160%) blur(14px);
+    -webkit-backdrop-filter: saturate(160%) blur(14px);
+    border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  }
+  .top .wrap { display: flex; align-items: center; gap: 22px; height: 64px; }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 21px; color: var(--text); text-decoration: none; letter-spacing: -0.02em; }
+  .logo img { width: 34px; height: 34px; }
+  .top nav { display: flex; gap: 4px; margin-left: auto; }
+  .top nav a { padding: 8px 12px; border-radius: 10px; color: var(--dim); text-decoration: none; font-size: 15px; font-weight: 600; }
+  .top nav a:hover { background: var(--bg2); color: var(--text); }
+  .top .cta { padding: 9px 16px; border-radius: 12px; background: var(--brand); color: #fff; text-decoration: none; font-weight: 700; font-size: 15px; }
+  @media (max-width: 760px) { .top nav { display: none; } .top .cta { margin-left: auto; } }
+
+  /* ───── 첫 화면 ───── */
+  .hero { padding: 64px 0 40px; background: radial-gradient(1200px 500px at 85% -10%, color-mix(in srgb, var(--teal) 18%, transparent), transparent 60%), radial-gradient(900px 500px at 0% 0%, color-mix(in srgb, var(--brand) 14%, transparent), transparent 60%); }
+  .hero .wrap { display: grid; grid-template-columns: 1fr 1.15fr; gap: 48px; align-items: center; }
+  .eyebrow { display: inline-flex; gap: 8px; align-items: center; padding: 6px 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); color: var(--dim); font-size: 14px; font-weight: 600; }
+  .eyebrow b { color: var(--ok); }
+  h1 { font-size: clamp(36px, 5.4vw, 60px); line-height: 1.15; letter-spacing: -0.035em; margin: 18px 0 16px; font-weight: 850; }
+  h1 em { font-style: normal; background: linear-gradient(90deg, var(--brand), var(--teal)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: 19px; color: var(--dim); margin: 0 0 28px; }
+  .lead b { color: var(--text); }
+  .dl-row { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn { display: inline-flex; align-items: center; gap: 10px; padding: 15px 22px; border-radius: 16px; font-weight: 750; font-size: 17px; text-decoration: none; border: 2px solid transparent; transition: transform .12s ease, box-shadow .12s ease; }
+  .btn:hover { transform: translateY(-2px); }
+  .btn svg { width: 22px; height: 22px; flex: none; }
+  .btn small { display: block; font-size: 12.5px; font-weight: 600; opacity: .8; }
+  .btn.primary { background: var(--brand); color: #fff; box-shadow: 0 10px 26px color-mix(in srgb, var(--brand) 40%, transparent); }
+  .btn.ghost { background: var(--card); color: var(--text); border-color: var(--line); }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 18px; color: var(--faint); font-size: 14px; }
+  .meta span::before { content: "✓ "; color: var(--ok); font-weight: 800; }
+  .mobile-note { display: none; margin-top: 14px; padding: 10px 14px; border-radius: 12px; background: var(--brand-soft); color: var(--dim); font-size: 14px; }
+  @media (max-width: 920px) { .hero .wrap { grid-template-columns: 1fr; } .hero { padding-top: 40px; } }
+
+  /* ───── iSee 화면 그림 (실제 앱처럼 어두운 화면) ───── */
+  .win { background: var(--win); border-radius: 16px; box-shadow: var(--shadow), 0 0 0 1px rgba(255,255,255,.06) inset; overflow: hidden; color: var(--win-text); font-size: 11px; }
+  .win-bar { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: #24262c; }
+  .win-bar i { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; }
+  .win-bar i:nth-child(2) { background: #febc2e; } .win-bar i:nth-child(3) { background: #28c840; }
+  .win-bar span { margin-left: 8px; color: var(--win-dim); font-weight: 600; }
+  .win-tool { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--win-line); background: #202227; white-space: nowrap; overflow: hidden; }
+  .win-tool .path { color: var(--win-dim); margin-right: auto; }
+  .win-tool .path b { color: var(--win-text); }
+  .pill { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--win-line); color: var(--win-dim); }
+  .pill.on { border-color: #4c8dff; background: rgba(76,141,255,.22); color: #fff; }
+  .win-body { display: grid; grid-template-columns: 112px 1fr; }
+  .win-side { background: var(--win-side); padding: 10px 8px; display: flex; flex-direction: column; gap: 3px; border-right: 1px solid var(--win-line); }
+  .win .win-side p { margin: 6px 6px 2px; color: #6b6d76; font-size: 9.5px; font-weight: 700; line-height: 1.4; }
+  .win-side span { padding: 4px 7px; border-radius: 6px; color: var(--win-dim); }
+  .win-side span.on { background: rgba(76,141,255,.25); color: #fff; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; padding: 10px; }
+  .tile { position: relative; border-radius: 7px; overflow: hidden; aspect-ratio: 4 / 3; background: #111; }
+  .tile svg { display: block; width: 100%; height: 100%; }
+  .tile.sel { outline: 2.5px solid #4c8dff; outline-offset: 1px; }
+  .tile.dim svg { opacity: .35; }
+  .badge { position: absolute; top: 4px; right: 4px; width: 17px; height: 17px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 900; color: #fff; }
+  .badge.ok { background: var(--ok); } .badge.no { background: var(--no); }
+  .stars { position: absolute; left: 4px; bottom: 3px; color: var(--star); font-size: 10px; text-shadow: 0 1px 2px rgba(0,0,0,.6); letter-spacing: -1px; }
+  .rec { position: absolute; left: 4px; top: 4px; padding: 1px 5px; border-radius: 5px; background: var(--star); color: #3b2700; font-size: 9px; font-weight: 800; }
+  .win-status { display: flex; justify-content: space-between; padding: 5px 10px; border-top: 1px solid var(--win-line); color: #6b6d76; font-size: 9.5px; }
+  .hero .win { transform: perspective(1600px) rotateY(-6deg) rotateX(2deg); }
+  @media (max-width: 920px) { .hero .win { transform: none; } }
+  @media (prefers-reduced-motion: no-preference) {
+    .hero .tile.walk { animation: walk 6s infinite; }
+    .hero .tile.walk:nth-of-type(2) { animation-delay: 1.5s; } .hero .tile.walk:nth-of-type(3) { animation-delay: 3s; } .hero .tile.walk:nth-of-type(4) { animation-delay: 4.5s; }
+    @keyframes walk { 0%, 22% { outline: 2.5px solid #4c8dff; outline-offset: 1px; } 25%, 100% { outline: 2.5px solid transparent; } }
+  }
+
+  /* ───── 공통 구역 ───── */
+  section { padding: 84px 0; }
+  section.alt { background: var(--bg2); }
+  .sec-head { text-align: center; max-width: 720px; margin: 0 auto 44px; }
+  .sec-head .tag { display: inline-block; padding: 5px 12px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-weight: 800; font-size: 14px; }
+  h2 { font-size: clamp(28px, 3.6vw, 40px); line-height: 1.25; letter-spacing: -0.03em; margin: 12px 0 10px; font-weight: 820; }
+  .sec-head p { color: var(--dim); margin: 0; font-size: 18px; }
+
+  /* ───── 할 수 있는 일 ───── */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .feat { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; display: flex; flex-direction: column; gap: 10px; }
+  .feat .pic { height: 120px; border-radius: 14px; background: var(--bg2); display: grid; place-items: center; overflow: hidden; }
+  .feat h3 { margin: 6px 0 0; font-size: 20px; letter-spacing: -0.02em; }
+  .feat p { margin: 0; color: var(--dim); font-size: 16px; }
+  @media (max-width: 920px) { .features { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { .features { grid-template-columns: 1fr; } }
+  .mini-row { display: flex; gap: 6px; align-items: center; }
+  .mini { width: 58px; border-radius: 8px; overflow: hidden; aspect-ratio: 4/3; position: relative; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+  .mini svg { display: block; width: 100%; height: 100%; }
+  .key { display: inline-grid; place-items: center; min-width: 34px; height: 34px; padding: 0 9px; border-radius: 9px; background: var(--card); border: 1px solid var(--line); border-bottom-width: 4px; font-weight: 850; font-size: 16px; color: var(--text); font-family: inherit; }
+  .key.ok { color: var(--ok); } .key.no { color: var(--no); } .key.star { color: var(--star); }
+  .face { width: 40px; height: 40px; border-radius: 50%; overflow: hidden; flex: none; box-shadow: 0 3px 8px rgba(0,0,0,.12); }
+  .face svg { display: block; width: 100%; height: 100%; }
+
+  /* ───── 사용법 ───── */
+  .steps { display: flex; flex-direction: column; gap: 26px; }
+  .step { display: grid; grid-template-columns: 1fr 1.1fr; gap: 40px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 28px; padding: 30px; }
+  .step:nth-child(even) .txt { order: 2; }
+  /* 그림이 세 칸이라 넓게: 설명 위, 그림 아래 */
+  .step.wide { grid-template-columns: 1fr; gap: 22px; }
+  .step.wide .txt { order: 0; display: grid; grid-template-columns: auto 1fr; column-gap: 18px; align-items: start; }
+  .step.wide .txt .num { grid-row: span 3; }
+  .step.wide .txt h3 { margin-top: 4px; }
+  .step.wide ul { flex-direction: row; flex-wrap: wrap; gap: 8px 22px; }
+  .step.wide .ill { min-height: 0; padding: 24px; }
+  @media (max-width: 600px) { .step.wide .txt { display: block; } .step.wide .ill { padding: 14px; } }
+  .num { display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; background: linear-gradient(135deg, var(--brand), var(--teal)); color: #fff; font-weight: 900; font-size: 22px; }
+  .step h3 { font-size: 26px; letter-spacing: -0.025em; margin: 14px 0 8px; }
+  .step p { color: var(--dim); margin: 0 0 10px; font-size: 17.5px; }
+  .step ul { margin: 6px 0 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; color: var(--dim); }
+  .step li .key { margin-right: 6px; vertical-align: middle; }
+  .key { vertical-align: middle; }
+  .step .ill { background: var(--bg2); border-radius: 20px; padding: 22px; min-height: 250px; display: grid; place-items: center; }
+  @media (max-width: 860px) { .step { grid-template-columns: 1fr; gap: 20px; padding: 22px; } .step:nth-child(even) .txt { order: 0; } }
+  .tip { margin-top: 26px; display: flex; gap: 14px; align-items: center; padding: 18px 22px; border-radius: 18px; background: color-mix(in srgb, var(--star) 16%, var(--card)); border: 1px solid color-mix(in srgb, var(--star) 40%, var(--line)); }
+  .tip .big { font-size: 30px; }
+
+  /* 그림 조각들 */
+  .viewer { width: 100%; max-width: 380px; border-radius: 14px; background: #0c0d10; padding: 12px; position: relative; box-shadow: var(--shadow); }
+  .viewer .photo { border-radius: 8px; overflow: hidden; aspect-ratio: 4/3; }
+  .viewer .photo svg { display: block; width: 100%; height: 100%; }
+  .arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 34px; height: 34px; border-radius: 50%; background: rgba(255,255,255,.9); display: grid; place-items: center; font-weight: 900; color: #222; box-shadow: 0 4px 10px rgba(0,0,0,.35); }
+  .arrow.l { left: 2px; } .arrow.r { right: 2px; }
+  .cursor { position: absolute; width: 30px; filter: drop-shadow(0 3px 4px rgba(0,0,0,.35)); }
+  .bubble { display: inline-block; padding: 5px 11px; border-radius: 10px; background: var(--brand); color: #fff; font-weight: 750; font-size: 14px; }
+  .pick-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; width: 100%; max-width: 420px; }
+  .pick-row .tile { border-radius: 10px; box-shadow: 0 6px 14px rgba(0,0,0,.14); }
+  .pick-row .badge { width: 24px; height: 24px; font-size: 13px; top: 6px; right: 6px; }
+  .pick-row .stars { font-size: 13px; left: 6px; bottom: 4px; }
+  .keys-row { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 18px; font-weight: 700; color: var(--dim); font-size: 15px; }
+  .keys-row span { display: flex; align-items: center; gap: 8px; }
+  .trash-pill { margin-top: 16px; display: inline-flex; gap: 8px; align-items: center; padding: 8px 14px; border-radius: 12px; border: 1.5px solid #f3b2b0; background: color-mix(in srgb, var(--no) 10%, var(--card)); color: var(--no); font-weight: 750; font-size: 14px; }
+  .organize3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; width: 100%; }
+  .org { background: var(--card); border-radius: 18px; padding: 16px; border: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; align-items: center; text-align: center; }
+  .org b { font-size: 16px; }
+  .org .stack { width: min(220px, 100%); height: 120px; }
+  .org .person .face { width: 32px; height: 32px; }
+  .org .person em { font-size: 14px; }
+  .org .folder { font-size: 14px; white-space: nowrap; }
+  .stack { position: relative; width: 100%; height: 86px; }
+  .stack .mini { position: absolute; width: 64%; }
+  .stack .mini:nth-child(1) { left: 0; top: 12px; filter: blur(1.2px); }
+  .stack .mini:nth-child(2) { left: 18%; top: 6px; filter: brightness(.55); }
+  .stack .mini:nth-child(3) { left: 36%; top: 0; outline: 2.5px solid var(--star); }
+  .stack .rec { font-size: 10px; }
+  .people { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+  .person { display: flex; align-items: center; gap: 4px; padding: 5px 6px; border-radius: 10px; background: var(--bg2); }
+  .person .face { width: 26px; height: 26px; box-shadow: none; }
+  .person em { font-style: normal; font-size: 12px; font-weight: 800; margin-right: auto; }
+  .person.unsorted em { color: #c58a00; }
+  .folders { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+  .folder { display: flex; align-items: center; gap: 6px; padding: 5px 7px; border-radius: 10px; background: var(--bg2); font-size: 12px; font-weight: 750; }
+  .folder svg { width: 22px; height: 22px; flex: none; }
+  @media (max-width: 520px) { .organize3 { grid-template-columns: 1fr; } }
+
+  /* ───── 안심 ───── */
+  .safe { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .safe div { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; }
+  .safe .ico { font-size: 34px; }
+  .safe h3 { margin: 8px 0 6px; font-size: 18px; }
+  .safe p { margin: 0; color: var(--dim); font-size: 15.5px; }
+  @media (max-width: 920px) { .safe { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 520px) { .safe { grid-template-columns: 1fr; } }
+
+  /* ───── 내려받기 ───── */
+  .dl-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .dl-card { background: var(--card); border: 1px solid var(--line); border-radius: 28px; padding: 28px; display: flex; flex-direction: column; gap: 14px; }
+  .dl-card.mine { border: 2px solid var(--brand); box-shadow: var(--shadow); }
+  .dl-card .os { display: flex; align-items: center; gap: 12px; }
+  .dl-card .os svg { width: 44px; height: 44px; }
+  .dl-card h3 { margin: 0; font-size: 24px; }
+  .dl-card .sub { color: var(--faint); font-size: 14px; }
+  .mine-tag { display: none; margin-left: auto; padding: 4px 10px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-size: 13px; font-weight: 800; }
+  .dl-card.mine .mine-tag { display: inline-block; }
+  .install { counter-reset: s; list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-direction: column; gap: 12px; }
+  .install li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; gap: 10px; color: var(--dim); font-size: 16px; }
+  .install li::before { content: counter(s); width: 28px; height: 28px; border-radius: 9px; background: var(--brand-soft); color: var(--brand); display: grid; place-items: center; font-weight: 900; font-size: 14px; }
+  .install b { color: var(--text); }
+  .dialog { margin-top: 8px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); font-size: 12.5px; max-width: 330px; }
+  .dialog .t { padding: 10px 12px; font-weight: 800; }
+  .dialog .c { padding: 0 12px 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .win-dialog { background: #1b5fbf; color: #fff; }
+  .win-dialog .link { text-decoration: underline; font-weight: 700; padding: 2px 5px; border-radius: 6px; outline: 2px dashed #ffd85a; }
+  .win-dialog .b { margin-left: auto; padding: 4px 14px; border: 1px solid #fff; border-radius: 4px; outline: 2px dashed #ffd85a; }
+  .mac-dialog { background: var(--bg2); color: var(--text); }
+  .mac-dialog .b { margin-left: auto; padding: 4px 12px; border-radius: 7px; background: var(--card); border: 1px solid var(--line); outline: 2px dashed #ffb627; font-weight: 700; }
+  .why { font-size: 14px; color: var(--faint); margin: 0; }
+  .update { margin-top: 26px; text-align: center; color: var(--dim); }
+  @media (max-width: 860px) { .dl-cards { grid-template-columns: 1fr; } }
+
+  /* ───── 궁금해요 ───── */
+  .faq { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 4px 22px; }
+  summary { cursor: pointer; list-style: none; padding: 16px 0; font-weight: 750; font-size: 18px; display: flex; gap: 12px; align-items: center; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "Q"; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 10px; background: var(--brand-soft); color: var(--brand); font-weight: 900; flex: none; }
+  summary::after { content: "+"; margin-left: auto; color: var(--faint); font-size: 24px; font-weight: 500; }
+  details[open] summary::after { content: "−"; }
+  details p { margin: 0 0 18px 42px; color: var(--dim); }
+
+  footer { padding: 46px 0 60px; border-top: 1px solid var(--line); color: var(--faint); font-size: 14px; }
+  footer .wrap { display: flex; flex-direction: column; gap: 10px; }
+  footer .who { color: var(--dim); font-size: 15px; }
+  footer .who b { color: var(--text); }
+</style>
+</head>
+<body>
+
+<!-- 그림 재료: 사진(산·바다·꽃·풍선·케이크·도시·숲·노을·눈사람·고양이)과 만화 얼굴. 학생 사진 대신 그림을 쓴다. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="sky1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6ec1ff"/><stop offset="1" stop-color="#dff3ff"/></linearGradient>
+    <linearGradient id="sky2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff9e5e"/><stop offset=".6" stop-color="#f06d8c"/><stop offset="1" stop-color="#7b5ad6"/></linearGradient>
+    <linearGradient id="sea1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2ba3dc"/><stop offset="1" stop-color="#1676b8"/></linearGradient>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1e2163"/><stop offset="1" stop-color="#4a3f9a"/></linearGradient>
+  </defs>
+  <symbol id="ph-mountain" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="url(#sky1)"/>
+    <circle cx="94" cy="22" r="10" fill="#ffd75e"/>
+    <path d="M0 90V60l30-27 22 22 21-27 47 40v22z" fill="#5a9c6b"/>
+    <path d="M30 33l8 8-5-1-5 4-4-5zM73 28l9 8-6-1-5 4-5-4z" fill="#fff"/>
+    <path d="M0 90V73l38-13 42 12 40-9v27z" fill="#3c7a52"/>
+  </symbol>
+  <symbol id="ph-sea" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="#a7e6ff"/>
+    <circle cx="24" cy="20" r="9" fill="#ffd75e"/>
+    <ellipse cx="80" cy="18" rx="14" ry="5" fill="#fff" opacity=".9"/>
+    <rect y="46" width="120" height="26" fill="url(#sea1)"/>
+    <path d="M10 56q5-3 10 0t10 0M60 62q5-3 10 0t10 0M88 52q5-3 10 0" stroke="#bfeaff" stroke-width="2" fill="none" stroke-linecap="round"/>
+    <path d="M70 46l10-14v14z" fill="#fff"/><path d="M64 46h22l-3 4H67z" fill="#e8574f"/>
+    <path d="M0 72q30-6 60 0t60 0v18H0z" fill="#f6d89e"/>
+  </symbol>
+  <symbol id="ph-flower" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="#d6f3c8"/>
+    <path d="M30 90V52M62 90V44M94 90V56" stroke="#3f9a52" stroke-width="3"/>
+    <ellipse cx="54" cy="70" rx="8" ry="4" fill="#58b36a" transform="rotate(-30 54 70)"/>
+    <g fill="#ff8fb3"><circle cx="30" cy="44" r="6"/><circle cx="22" cy="50" r="6"/><circle cx="38" cy="50" r="6"/><circle cx="26" cy="58" r="6"/><circle cx="34" cy="58" r="6"/></g><circle cx="30" cy="52" r="4.5" fill="#ffd34d"/>
+    <g fill="#ffcf3f"><circle cx="62" cy="34" r="7"/><circle cx="53" cy="41" r="7"/><circle cx="71" cy="41" r="7"/><circle cx="57" cy="50" r="7"/><circle cx="67" cy="50" r="7"/></g><circle cx="62" cy="43" r="5" fill="#ff8a3d"/>
+    <g fill="#b48cff"><circle cx="94" cy="48" r="5.5"/><circle cx="87" cy="54" r="5.5"/><circle cx="101" cy="54" r="5.5"/><circle cx="90" cy="61" r="5.5"/><circle cx="98" cy="61" r="5.5"/></g><circle cx="94" cy="55" r="4" fill="#fff3a8"/>
+  </symbol>
+  <symbol id="ph-balloon" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="#bfe0ff"/>
+    <ellipse cx="30" cy="70" rx="18" ry="6" fill="#fff" opacity=".85"/><ellipse cx="96" cy="26" rx="14" ry="5" fill="#fff" opacity=".85"/>
+    <path d="M46 46q-2 20 4 40M62 40q2 22-2 46M78 48q-1 20-6 38" stroke="#5a6170" stroke-width="1" fill="none"/>
+    <ellipse cx="46" cy="32" rx="11" ry="14" fill="#ff6b6b"/><ellipse cx="62" cy="26" rx="11" ry="14" fill="#ffc94d"/><ellipse cx="78" cy="34" rx="11" ry="14" fill="#4cc38a"/>
+    <ellipse cx="42" cy="27" rx="3" ry="4" fill="#fff" opacity=".5"/><ellipse cx="58" cy="21" rx="3" ry="4" fill="#fff" opacity=".5"/><ellipse cx="74" cy="29" rx="3" ry="4" fill="#fff" opacity=".5"/>
+  </symbol>
+  <symbol id="ph-cake" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="#ffe2ee"/>
+    <circle cx="16" cy="16" r="3" fill="#ff8fb3"/><circle cx="104" cy="22" r="3" fill="#7fc8ff"/><circle cx="96" cy="12" r="2" fill="#ffcf3f"/><circle cx="24" cy="30" r="2" fill="#4cc38a"/>
+    <rect y="74" width="120" height="16" fill="#e7b388"/>
+    <rect x="30" y="50" width="60" height="24" rx="4" fill="#fff6e6"/><rect x="30" y="58" width="60" height="6" fill="#ff9fb8"/>
+    <rect x="38" y="34" width="44" height="18" rx="4" fill="#ffd2e0"/><path d="M38 40q5 5 11 0t11 0t11 0t11 0" stroke="#fff" stroke-width="3" fill="none"/>
+    <g fill="#7fc8ff"><rect x="47" y="22" width="4" height="12" rx="1"/><rect x="58" y="20" width="4" height="14" rx="1"/><rect x="69" y="22" width="4" height="12" rx="1"/></g>
+    <g fill="#ffb02e"><ellipse cx="49" cy="18" rx="2.5" ry="4"/><ellipse cx="60" cy="16" rx="2.5" ry="4"/><ellipse cx="71" cy="18" rx="2.5" ry="4"/></g>
+  </symbol>
+  <symbol id="ph-city" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="url(#night)"/>
+    <circle cx="96" cy="18" r="8" fill="#ffe58a"/><circle cx="100" cy="15" r="7" fill="#2a2b70"/>
+    <g fill="#fff"><circle cx="20" cy="12" r="1"/><circle cx="46" cy="22" r="1"/><circle cx="70" cy="10" r="1"/><circle cx="12" cy="30" r="1"/></g>
+    <rect x="6" y="44" width="22" height="46" fill="#3b3f8f"/><rect x="30" y="30" width="20" height="60" fill="#4a4fa6"/><rect x="52" y="50" width="22" height="40" fill="#3b3f8f"/><rect x="76" y="36" width="18" height="54" fill="#4a4fa6"/><rect x="96" y="56" width="20" height="34" fill="#3b3f8f"/>
+    <g fill="#ffd96a"><rect x="10" y="50" width="4" height="4"/><rect x="20" y="58" width="4" height="4"/><rect x="34" y="36" width="4" height="4"/><rect x="42" y="46" width="4" height="4"/><rect x="34" y="60" width="4" height="4"/><rect x="56" y="56" width="4" height="4"/><rect x="66" y="66" width="4" height="4"/><rect x="80" y="42" width="4" height="4"/><rect x="86" y="54" width="4" height="4"/><rect x="100" y="62" width="4" height="4"/></g>
+  </symbol>
+  <symbol id="ph-forest" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="#e2f5e7"/>
+    <circle cx="96" cy="18" r="8" fill="#ffd75e"/>
+    <rect y="76" width="120" height="14" fill="#9fd08a"/>
+    <g fill="#7b5236"><rect x="20" y="62" width="5" height="16"/><rect x="50" y="56" width="6" height="22"/><rect x="84" y="62" width="5" height="16"/></g>
+    <path d="M22 26l15 38H7z" fill="#3f9a5b"/><path d="M53 14l19 46H34z" fill="#2f7d48"/><path d="M86 28l14 36H72z" fill="#3f9a5b"/>
+  </symbol>
+  <symbol id="ph-sunset" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="url(#sky2)"/>
+    <path d="M38 56a22 22 0 0 1 44 0z" fill="#ffe08a"/>
+    <rect y="56" width="120" height="34" fill="#4a3d8f"/>
+    <g fill="#ffe08a" opacity=".7"><rect x="46" y="62" width="28" height="2.5" rx="1"/><rect x="52" y="70" width="16" height="2.5" rx="1"/><rect x="56" y="78" width="8" height="2.5" rx="1"/></g>
+  </symbol>
+  <symbol id="ph-snow" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="#d9eefc"/>
+    <g fill="#fff"><circle cx="14" cy="14" r="2"/><circle cx="40" cy="8" r="1.6"/><circle cx="100" cy="12" r="2"/><circle cx="84" cy="30" r="1.6"/><circle cx="24" cy="40" r="1.6"/></g>
+    <path d="M0 74q40-10 120 0v16H0z" fill="#fff"/>
+    <circle cx="60" cy="62" r="16" fill="#fff" stroke="#cfe3f3"/><circle cx="60" cy="38" r="11" fill="#fff" stroke="#cfe3f3"/>
+    <circle cx="56" cy="36" r="1.5" fill="#333"/><circle cx="64" cy="36" r="1.5" fill="#333"/><path d="M60 39l7 2-7 1z" fill="#ff8a3d"/>
+    <path d="M50 47h20v5H50z" fill="#f05a57"/><path d="M64 50h5v10h-5z" fill="#f05a57"/>
+  </symbol>
+  <symbol id="ph-cat" viewBox="0 0 120 90">
+    <rect width="120" height="90" fill="#fff1d4"/>
+    <path d="M36 30l6-18 12 12zM84 30l-6-18-12 12z" fill="#f2a24e"/>
+    <ellipse cx="60" cy="50" rx="30" ry="26" fill="#f2a24e"/>
+    <ellipse cx="60" cy="58" rx="14" ry="10" fill="#fff4e3"/>
+    <circle cx="49" cy="45" r="4" fill="#2d2a32"/><circle cx="71" cy="45" r="4" fill="#2d2a32"/><circle cx="50" cy="44" r="1.2" fill="#fff"/><circle cx="72" cy="44" r="1.2" fill="#fff"/>
+    <path d="M57 54h6l-3 3z" fill="#e8708a"/><path d="M60 57q-3 4-7 2M60 57q3 4 7 2" stroke="#2d2a32" stroke-width="1.4" fill="none"/>
+    <path d="M40 55H26M40 59H27M80 55h14M80 59h13" stroke="#8a5a2b" stroke-width="1.2"/>
+  </symbol>
+
+  <!-- 만화 얼굴 (60×60) -->
+  <symbol id="fc-a" viewBox="0 0 60 60"><rect width="60" height="60" fill="#dfeaff"/><path d="M14 60q16-14 32 0z" fill="#3a78ff"/><circle cx="30" cy="30" r="15" fill="#ffd8b8"/><path d="M15 27q2-15 15-15t15 15q-6-6-15-6t-15 6z" fill="#2b2830"/><circle cx="24.5" cy="31" r="1.9" fill="#2b2830"/><circle cx="35.5" cy="31" r="1.9" fill="#2b2830"/><path d="M25 37q5 4 10 0" stroke="#2b2830" stroke-width="1.6" fill="none" stroke-linecap="round"/><circle cx="21" cy="35" r="2.4" fill="#ffadad" opacity=".6"/><circle cx="39" cy="35" r="2.4" fill="#ffadad" opacity=".6"/></symbol>
+  <symbol id="fc-b" viewBox="0 0 60 60"><rect width="60" height="60" fill="#ffe6ef"/><path d="M14 60q16-14 32 0z" fill="#ff7aa2"/><circle cx="12" cy="34" r="6" fill="#6b3e26"/><circle cx="48" cy="34" r="6" fill="#6b3e26"/><circle cx="30" cy="30" r="15" fill="#ffdcbf"/><path d="M15 29q0-16 15-16t15 16q-4-8-15-9-11 1-15 9z" fill="#6b3e26"/><circle cx="24.5" cy="31" r="1.9" fill="#2b2830"/><circle cx="35.5" cy="31" r="1.9" fill="#2b2830"/><path d="M25 37q5 4 10 0" stroke="#2b2830" stroke-width="1.6" fill="none" stroke-linecap="round"/><circle cx="21" cy="35" r="2.4" fill="#ffadad" opacity=".7"/><circle cx="39" cy="35" r="2.4" fill="#ffadad" opacity=".7"/></symbol>
+  <symbol id="fc-c" viewBox="0 0 60 60"><rect width="60" height="60" fill="#e2f6ea"/><path d="M14 60q16-14 32 0z" fill="#1fae78"/><circle cx="30" cy="30" r="15" fill="#f6cfa8"/><path d="M15 28q1-16 15-16 13 0 15 16-3-5-8-6-7 4-22 6z" fill="#7a4b2a"/><circle cx="24.5" cy="31" r="4.2" fill="none" stroke="#2b2830" stroke-width="1.5"/><circle cx="35.5" cy="31" r="4.2" fill="none" stroke="#2b2830" stroke-width="1.5"/><path d="M28.7 31h2.6" stroke="#2b2830" stroke-width="1.5"/><circle cx="24.5" cy="31" r="1.5" fill="#2b2830"/><circle cx="35.5" cy="31" r="1.5" fill="#2b2830"/><path d="M26 38q4 3 8 0" stroke="#2b2830" stroke-width="1.6" fill="none" stroke-linecap="round"/></symbol>
+  <symbol id="fc-d" viewBox="0 0 60 60"><rect width="60" height="60" fill="#efe6ff"/><path d="M13 46q-2-30 17-32 19 2 17 32z" fill="#2b2830"/><path d="M14 60q16-14 32 0z" fill="#8b5cf6"/><circle cx="30" cy="31" r="14" fill="#ffdcbf"/><path d="M16 28q3-12 14-12t14 12q-8-2-14-8-6 6-14 8z" fill="#2b2830"/><circle cx="25" cy="32" r="1.9" fill="#2b2830"/><circle cx="35" cy="32" r="1.9" fill="#2b2830"/><path d="M26 38q4 3 8 0" stroke="#2b2830" stroke-width="1.6" fill="none" stroke-linecap="round"/><circle cx="21.5" cy="36" r="2.3" fill="#ffadad" opacity=".7"/><circle cx="38.5" cy="36" r="2.3" fill="#ffadad" opacity=".7"/></symbol>
+  <!-- 옆모습 (미분류로 가는 얼굴) -->
+  <symbol id="fc-side" viewBox="0 0 60 60"><rect width="60" height="60" fill="#fff4d6"/><path d="M14 60q16-14 32 0z" fill="#ffad1f"/><path d="M20 30q0-15 13-15 12 0 13 13l3 6-3 1q0 9-9 11-10 1-15-5-2-5-2-11z" fill="#ffd8b8"/><path d="M19 30q-1-17 14-17 9 0 12 8-8-2-12 3-3 6-8 8-2 2-3 5z" fill="#2b2830"/><circle cx="39" cy="29" r="1.8" fill="#2b2830"/><path d="M38 38q3 1 5-1" stroke="#2b2830" stroke-width="1.5" fill="none" stroke-linecap="round"/></symbol>
+
+  <!-- 작은 아이콘 -->
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11m0 0l-5-5m5 5l5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="#ffc94d"/><path d="M3 10h18v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="#ffb627"/></symbol>
+  <symbol id="i-cursor" viewBox="0 0 24 24"><path d="M5 3l13 8-6 1.5L15 20l-3 1.3-3-7.4L5 18z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+  <symbol id="i-pc" viewBox="0 0 48 48"><rect x="4" y="7" width="40" height="27" rx="3" fill="#2f6fe8"/><rect x="7" y="10" width="34" height="21" rx="1.5" fill="#8fd0ff"/><path d="M18 41h12l-2-7h-8z" fill="#9aa4b5"/><rect x="14" y="40" width="20" height="3" rx="1.5" fill="#7d879a"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 48 48"><rect x="8" y="9" width="32" height="22" rx="3" fill="#3b4252"/><rect x="11" y="12" width="26" height="16" rx="1.5" fill="#cfe6ff"/><path d="M3 33h42l-3 5H6z" fill="#9aa4b5"/></symbol>
+</svg>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="#"><img src="/assets/icon.png" alt="" />iSee</a>
+    <nav aria-label="차례">
+      <a href="#what">할 수 있는 일</a>
+      <a href="#how">사용법</a>
+      <a href="#safe">안심하세요</a>
+      <a href="#download">내려받기</a>
+      <a href="#faq">궁금해요</a>
+    </nav>
+    <a class="cta" href="#download">무료로 받기</a>
+  </div>
+</header>
+
+<main>
+  <!-- ───── 첫 화면 ───── -->
+  <section class="hero" style="padding-top:56px">
+    <div class="wrap">
+      <div>
+        <span class="eyebrow"><b>●</b> 무료 · 윈도우 · 맥 · 버전 <span data-version>0.1.6</span></span>
+        <h1>사진 정리,<br /><em>쉽고 빠르게!</em></h1>
+        <p class="lead">
+          <b>iSee(아이씨)</b>는 컴퓨터에 있는 사진을 <b>아주 빠르게 보고</b>, 남길 사진을 <b>고르고</b>,
+          비슷한 사진·사람·날짜별로 <b>깔끔하게 정리</b>해 주는 무료 프로그램이에요.
+        </p>
+        <div class="dl-row" id="hero-dl">
+          <a class="btn primary" data-dl="win" href="https://github.com/janghwansangai/isee-releases/releases/download/v0.1.6/iSee_0.1.6_x64-setup.exe">
+            <svg><use href="#i-down"/></svg><span>윈도우용 내려받기<small>Windows 10 · 11</small></span>
+          </a>
+          <a class="btn ghost" data-dl="mac" href="https://github.com/janghwansangai/isee-releases/releases/download/v0.1.6/iSee_0.1.6_universal.dmg">
+            <svg><use href="#i-down"/></svg><span>맥용 내려받기<small>애플 칩 · 인텔 모두</small></span>
+          </a>
+        </div>
+        <p class="mobile-note" id="mobile-note">📱 iSee는 컴퓨터(윈도우·맥)용 프로그램이에요. 컴퓨터에서 이 페이지를 열어 내려받아 주세요.</p>
+        <div class="meta"><span>광고 없음</span><span>사진은 내 컴퓨터에만</span><span>새 버전 자동 알림</span></div>
+      </div>
+
+      <div class="win" role="img" aria-label="iSee 화면: 왼쪽에 폴더 목록, 오른쪽에 사진들이 바둑판처럼 보이고, 고른 사진에는 초록 체크와 빨간 엑스 표시가 있어요">
+        <div class="win-bar"><i></i><i></i><i></i><span>iSee</span></div>
+        <div class="win-tool"><span class="path">사진 › <b>가족 여행</b></span><span class="pill">인물</span><span class="pill">비슷한 사진</span><span class="pill on">빠른 고르기</span></div>
+        <div class="win-body">
+          <div class="win-side">
+            <p>위치</p><span>🏠 홈</span><span class="on">🖼 사진</span><span>⬇ 다운로드</span>
+            <p>클라우드</p><span>☁ 구글 드라이브</span>
+            <p>빠른 이동</p><span>1 남길 사진</span><span>2 앨범</span>
+          </div>
+          <div>
+            <div class="grid">
+              <div class="tile walk"><svg><use href="#ph-mountain"/></svg><span class="badge ok">✓</span></div>
+              <div class="tile walk"><svg><use href="#ph-sea"/></svg><span class="stars">★★★★★</span></div>
+              <div class="tile walk"><svg><use href="#ph-cake"/></svg></div>
+              <div class="tile walk"><svg><use href="#ph-balloon"/></svg><span class="badge ok">✓</span></div>
+              <div class="tile dim"><svg><use href="#ph-flower"/></svg><span class="badge no">✕</span></div>
+              <div class="tile"><svg><use href="#ph-sunset"/></svg></div>
+              <div class="tile"><svg><use href="#ph-cat"/></svg><span class="stars">★★★★</span></div>
+              <div class="tile"><svg><use href="#ph-city"/></svg></div>
+              <div class="tile"><svg><use href="#ph-forest"/></svg></div>
+              <div class="tile"><svg><use href="#ph-snow"/></svg><span class="badge ok">✓</span></div>
+              <div class="tile"><svg><use href="#ph-mountain"/></svg></div>
+              <div class="tile"><svg><use href="#ph-sea"/></svg></div>
+            </div>
+            <div class="win-status"><span>사진 1,248장 · 남김 3 · 버림 1</span><span>목록 3ms</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── 할 수 있는 일 ───── -->
+  <section id="what">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">할 수 있는 일</span>
+        <h2>iSee로 이런 걸 할 수 있어요</h2>
+        <p>사진이 많아도 걱정 없어요. 보고, 고르고, 정리하는 일을 한곳에서 해요.</p>
+      </div>
+      <div class="features">
+        <div class="feat">
+          <div class="pic"><div class="mini-row"><div class="mini"><svg><use href="#ph-sea"/></svg></div><b style="font-size:22px;color:var(--brand)">⚡</b><div class="mini"><svg><use href="#ph-mountain"/></svg></div><b style="font-size:22px;color:var(--brand)">⚡</b><div class="mini"><svg><use href="#ph-cat"/></svg></div></div></div>
+          <h3>번개처럼 빨리 보기</h3>
+          <p>사진 수천 장도 기다리지 않고 바로바로 넘겨 봐요. 동영상·PDF도 함께 볼 수 있어요.</p>
+        </div>
+        <div class="feat">
+          <div class="pic"><div class="mini-row"><span class="key ok">P</span><div class="mini"><svg><use href="#ph-balloon"/></svg><span class="badge ok" style="width:15px;height:15px;font-size:9px">✓</span></div><span class="key no">X</span><div class="mini" style="opacity:.45"><svg><use href="#ph-flower"/></svg></div></div></div>
+          <h3>남길 사진 고르기</h3>
+          <p>마음에 들면 <b>P</b>, 지울 사진은 <b>X</b>. 숫자 키로 별점도 줄 수 있어요.</p>
+        </div>
+        <div class="feat">
+          <div class="pic"><div class="stack" style="width:150px"><div class="mini"><svg><use href="#ph-cake"/></svg></div><div class="mini"><svg><use href="#ph-cake"/></svg></div><div class="mini"><svg><use href="#ph-cake"/></svg><span class="rec">★ 추천</span></div></div></div>
+          <h3>비슷한 사진 정리</h3>
+          <p>여러 번 찍은 비슷한 사진 중에서 가장 잘 나온 사진을 ★로 알려 줘요.</p>
+        </div>
+        <div class="feat">
+          <div class="pic"><div class="mini-row"><div class="face"><svg><use href="#fc-a"/></svg></div><div class="face"><svg><use href="#fc-a"/></svg></div><b style="color:var(--faint)">→</b><span class="bubble">민준</span></div></div>
+          <h3>사람별로 모아 보기</h3>
+          <p>얼굴을 찾아 같은 사람끼리 모아 줘요. 이름을 붙이면 다음부터 알아봐요.</p>
+        </div>
+        <div class="feat">
+          <div class="pic"><div class="mini-row"><div class="mini"><svg><use href="#ph-snow"/></svg></div><b style="color:var(--faint)">→</b><svg width="34" height="34"><use href="#i-folder"/></svg><b style="font-size:14px">2026-12<br/>강원</b></div></div>
+          <h3>날짜·장소별 폴더</h3>
+          <p>언제, 어디서 찍었는지 보고 폴더를 알아서 만들어 정리해요.</p>
+        </div>
+        <div class="feat">
+          <div class="pic"><div class="mini-row"><div class="mini" style="width:74px"><svg><use href="#ph-city"/></svg><span style="position:absolute;left:6px;bottom:4px;color:#fff;font-weight:900;font-size:11px;text-shadow:0 1px 2px #000">안녕!</span></div><span class="bubble" style="background:var(--teal)">✂ 자르기 · ✏ 글씨</span></div></div>
+          <h3>쉽게 고치고 바꾸기</h3>
+          <p>자르기·글씨 쓰기·모자이크, 크기·형식 바꾸기를 마우스 오른쪽 버튼으로 바로 해요.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── 사용법 ───── -->
+  <section id="how" class="alt">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">사용법</span>
+        <h2>이렇게 써요, 딱 5단계!</h2>
+        <p>그림을 따라 하면 처음이어도 금방 할 수 있어요.</p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="txt">
+            <span class="num">1</span>
+            <h3>내려받아 설치해요</h3>
+            <p>이 페이지 아래의 <b>내려받기</b> 버튼을 눌러요. 받은 파일을 열면 설치가 시작돼요.</p>
+            <ul><li>🪟 윈도우: 받은 <b>.exe</b> 파일을 두 번 클릭</li><li>🍎 맥: 받은 <b>.dmg</b>를 열고 iSee를 응용 프로그램 폴더로 끌어 놓기</li></ul>
+          </div>
+          <div class="ill" role="img" aria-label="내려받기 버튼을 누르면 컴퓨터에 iSee가 설치되는 그림">
+            <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:center">
+              <div style="position:relative">
+                <span class="btn primary" style="pointer-events:none"><svg><use href="#i-down"/></svg>내려받기</span>
+                <svg class="cursor" style="right:-14px;bottom:-18px"><use href="#i-cursor"/></svg>
+              </div>
+              <b style="font-size:28px;color:var(--faint)">→</b>
+              <div style="position:relative;width:150px">
+                <svg width="150" height="150"><use href="#i-pc"/></svg>
+                <img src="/assets/icon.png" alt="" style="position:absolute;left:54px;top:34px;width:42px;height:42px" />
+                <span class="bubble" style="position:absolute;right:-10px;top:-6px;background:var(--ok)">설치 끝! ✓</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="txt">
+            <span class="num">2</span>
+            <h3>사진 폴더를 열어요</h3>
+            <p>왼쪽에서 <b>사진</b>이나 <b>다운로드</b> 같은 폴더를 누르면 사진이 한눈에 쫙 보여요.</p>
+            <ul><li>🔍 오른쪽 위 막대로 사진 크기를 크게·작게</li><li>📋 목록으로 보면 파일 이름·날짜도 보여요</li></ul>
+          </div>
+          <div class="ill">
+            <div class="win" style="width:100%;max-width:440px;position:relative" role="img" aria-label="왼쪽 폴더 목록에서 사진 폴더를 누르면 오른쪽에 사진들이 보이는 그림">
+              <div class="win-bar"><i></i><i></i><i></i><span>iSee</span></div>
+              <div class="win-body">
+                <div class="win-side" style="position:relative"><p>위치</p><span>🏠 홈</span><span class="on">🖼 사진</span><span>⬇ 다운로드</span><span>☁ 드라이브</span>
+                  <svg class="cursor" style="left:62px;top:48px;width:26px"><use href="#i-cursor"/></svg></div>
+                <div class="grid" style="grid-template-columns:repeat(3,1fr)">
+                  <div class="tile"><svg><use href="#ph-flower"/></svg></div><div class="tile"><svg><use href="#ph-sea"/></svg></div><div class="tile"><svg><use href="#ph-cat"/></svg></div>
+                  <div class="tile"><svg><use href="#ph-forest"/></svg></div><div class="tile"><svg><use href="#ph-balloon"/></svg></div><div class="tile"><svg><use href="#ph-sunset"/></svg></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="txt">
+            <span class="num">3</span>
+            <h3>크게 보고 넘겨요</h3>
+            <p>사진을 <b>두 번 클릭</b>하면 크게 보여요. 키보드 <span class="key">←</span> <span class="key">→</span> 로 앞뒤 사진을 넘겨요.</p>
+            <ul><li>🔎 마우스 휠을 굴리거나 두 손가락으로 벌리면 확대</li><li>↩️ <span class="key" style="height:28px;min-width:44px;font-size:13px">Esc</span> 를 누르면 다시 목록으로</li></ul>
+          </div>
+          <div class="ill">
+            <div class="viewer" role="img" aria-label="사진 한 장이 크게 보이고 양옆에 화살표가 있는 그림">
+              <div class="photo"><svg><use href="#ph-mountain"/></svg></div>
+              <span class="arrow l">←</span><span class="arrow r">→</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="txt">
+            <span class="num">4</span>
+            <h3>남길 사진을 골라요</h3>
+            <p>위쪽의 <b>빠른 고르기</b>를 켜요. 사진마다 키 하나만 누르면 다음 사진으로 넘어가요.</p>
+            <ul>
+              <li><span class="key ok">P</span> 남길래요 (초록 체크)</li>
+              <li><span class="key no">X</span> 버릴래요 (빨간 엑스)</li>
+              <li><span class="key star">5</span> 별점 주기 (1~5)</li>
+            </ul>
+          </div>
+          <div class="ill">
+            <div style="display:flex;flex-direction:column;align-items:center">
+              <div class="pick-row" role="img" aria-label="사진 네 장 중 하나는 초록 체크, 하나는 빨간 엑스, 하나는 별 다섯 개가 붙은 그림">
+                <div class="tile"><svg><use href="#ph-balloon"/></svg><span class="badge ok">✓</span></div>
+                <div class="tile dim"><svg><use href="#ph-flower"/></svg><span class="badge no">✕</span></div>
+                <div class="tile"><svg><use href="#ph-sea"/></svg><span class="stars">★★★★★</span></div>
+                <div class="tile sel"><svg><use href="#ph-cat"/></svg></div>
+              </div>
+              <div class="keys-row"><span><span class="key ok">P</span>남김</span><span><span class="key no">X</span>버림</span><span><span class="key star">1~5</span>별점</span></div>
+              <span class="trash-pill">🗑 버린 사진 1장 휴지통으로</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="step wide">
+          <div class="txt">
+            <span class="num">5</span>
+            <h3>한 번에 정리해요</h3>
+            <p>사진이 많을 때는 iSee가 대신 묶어 줘요. 위쪽 단추나 <b>정리</b> 메뉴에서 골라요.</p>
+            <ul>
+              <li>⭐ <b>비슷한 사진</b>: 가장 잘 나온 한 장만 남기기</li>
+              <li>🙂 <b>인물</b>: 같은 사람끼리 모으고 이름 붙이기</li>
+              <li>📁 <b>날짜·장소별 정리</b>: 폴더를 알아서 만들기</li>
+            </ul>
+          </div>
+          <div class="ill">
+            <div class="organize3">
+              <div class="org" role="img" aria-label="비슷한 사진 세 장 중 가장 잘 나온 사진에 추천 별표가 붙은 그림">
+                <b>⭐ 비슷한 사진</b>
+                <div class="stack"><div class="mini"><svg><use href="#ph-balloon"/></svg></div><div class="mini"><svg><use href="#ph-balloon"/></svg></div><div class="mini"><svg><use href="#ph-balloon"/></svg><span class="rec">★ 추천</span></div></div>
+                <span style="font-size:12px;color:var(--dim)">흐린 것·어두운 것은 정리</span>
+              </div>
+              <div class="org" role="img" aria-label="얼굴들이 민준, 서연, 미분류로 나뉘어 모인 그림">
+                <b>🙂 인물</b>
+                <div class="people">
+                  <div class="person"><em>민준</em><div class="face"><svg><use href="#fc-a"/></svg></div><div class="face"><svg><use href="#fc-a"/></svg></div><div class="face"><svg><use href="#fc-a"/></svg></div></div>
+                  <div class="person"><em>서연</em><div class="face"><svg><use href="#fc-b"/></svg></div><div class="face"><svg><use href="#fc-b"/></svg></div></div>
+                  <div class="person unsorted"><em>미분류</em><div class="face"><svg><use href="#fc-side"/></svg></div><div class="face"><svg><use href="#fc-c"/></svg></div></div>
+                </div>
+              </div>
+              <div class="org" role="img" aria-label="사진들이 날짜와 장소 이름이 붙은 폴더로 들어가는 그림">
+                <b>📁 날짜·장소</b>
+                <div class="folders">
+                  <div class="folder"><svg><use href="#i-folder"/></svg>2026-09 경주</div>
+                  <div class="folder"><svg><use href="#i-folder"/></svg>2026-10 제주</div>
+                  <div class="folder"><svg><use href="#i-folder"/></svg>2026-12 강원</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tip">
+        <span class="big">💡</span>
+        <div><b>실수해도 괜찮아요!</b> <span class="key" style="height:28px;font-size:13px" data-undo>Ctrl+Z</span> 를 누르면 방금 한 일을 되돌려요. 더 자세한 사용법은 프로그램의 <b>도움말 › 사용 설명서</b>(F1)에 있어요.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── 안심 ───── -->
+  <section id="safe">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">안심하세요</span>
+        <h2>내 사진은 안전하게</h2>
+        <p>가족·친구 사진도 걱정 없이 정리할 수 있어요.</p>
+      </div>
+      <div class="safe">
+        <div><span class="ico">🔒</span><h3>내 컴퓨터에만</h3><p>사진과 얼굴 정보는 인터넷으로 보내지 않아요.</p></div>
+        <div><span class="ico">🗑</span><h3>바로 지우지 않아요</h3><p>지운 사진은 휴지통으로 가요. 다시 꺼낼 수 있어요.</p></div>
+        <div><span class="ico">↩️</span><h3>되돌리기</h3><p>옮기기·지우기·바꾸기를 한 번에 원래대로 돌려요.</p></div>
+        <div><span class="ico">🎁</span><h3>모두 무료</h3><p>돈을 내지 않아도 모든 기능을 쓸 수 있어요.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── 내려받기 ───── -->
+  <section id="download" class="alt">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">내려받기</span>
+        <h2>지금 바로 받아 보세요</h2>
+        <p>최신 버전 <b data-version>0.1.6</b> · 내 컴퓨터에 맞는 것을 골라요.</p>
+      </div>
+      <div class="dl-cards">
+        <div class="dl-card" data-card="win">
+          <div class="os"><svg><use href="#i-pc"/></svg><div><h3>윈도우</h3><span class="sub">Windows 10 · 11 (64비트) · <span data-size="win">약 13MB</span></span></div><span class="mine-tag">내 컴퓨터</span></div>
+          <a class="btn primary" data-dl="win" href="https://github.com/janghwansangai/isee-releases/releases/download/v0.1.6/iSee_0.1.6_x64-setup.exe"><svg><use href="#i-down"/></svg>윈도우용 내려받기</a>
+          <ol class="install">
+            <li><span>받은 <b>iSee_…_x64-setup.exe</b> 파일을 두 번 클릭해요. (관리자 권한 필요 없어요)</span></li>
+            <li><span>파란 <b>"Windows의 PC 보호"</b> 창이 뜨면 <b>추가 정보</b> → <b>실행</b>을 눌러요.
+              <div class="dialog win-dialog" role="img" aria-label="파란 창에서 추가 정보를 누른 뒤 실행 단추를 누르는 그림"><div class="t">Windows의 PC 보호</div><div class="c"><span>알 수 없는 앱…</span><span class="link">추가 정보</span><span class="b">실행</span></div></div></span></li>
+            <li><span>설치가 끝나면 시작 메뉴에서 <b>iSee</b>를 열어요.</span></li>
+          </ol>
+          <p class="why">왜 경고가 뜨나요? 개인이 만든 무료 프로그램이라 회사 인증서를 사지 않아서 그래요. 프로그램은 안전해요.</p>
+        </div>
+        <div class="dl-card" data-card="mac">
+          <div class="os"><svg><use href="#i-laptop"/></svg><div><h3>맥</h3><span class="sub">애플 칩 · 인텔 모두 · <span data-size="mac">약 34MB</span></span></div><span class="mine-tag">내 컴퓨터</span></div>
+          <a class="btn primary" data-dl="mac" href="https://github.com/janghwansangai/isee-releases/releases/download/v0.1.6/iSee_0.1.6_universal.dmg"><svg><use href="#i-down"/></svg>맥용 내려받기</a>
+          <ol class="install">
+            <li><span>받은 <b>iSee_…_universal.dmg</b>를 열고, <b>iSee</b>를 <b>응용 프로그램</b> 폴더로 끌어 놓아요.</span></li>
+            <li><span>처음 열 때 확인 창이 뜨면 <b>시스템 설정 › 개인정보 보호 및 보안</b>에서 <b>그래도 열기</b>를 눌러요. (한 번만)
+              <div class="dialog mac-dialog" role="img" aria-label="시스템 설정의 개인정보 보호 및 보안에서 그래도 열기 단추를 누르는 그림"><div class="t">개인정보 보호 및 보안</div><div class="c"><span>"iSee"을(를) 열지 못했습니다…</span><span class="b">그래도 열기</span></div></div></span></li>
+            <li><span>사진·다운로드 폴더를 처음 열 때 묻는 창에서 <b>허용</b>을 눌러요. 한 번 허용하면 다시 묻지 않아요.</span></li>
+          </ol>
+          <p class="why">왜 확인 창이 뜨나요? 애플 공증을 받지 않은 개인 프로그램이라 그래요. 프로그램은 안전해요.</p>
+        </div>
+      </div>
+      <p class="update">🔔 새 버전이 나오면 프로그램이 알려 주고, 누르기만 하면 업데이트돼요. · <a href="https://github.com/janghwansangai/isee-releases/releases/latest" rel="noopener">모든 버전 보기</a></p>
+    </div>
+  </section>
+
+  <!-- ───── 궁금해요 ───── -->
+  <section id="faq">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">궁금해요</span>
+        <h2>자주 묻는 질문</h2>
+      </div>
+      <div class="faq">
+        <details open><summary>정말 무료인가요?</summary><p>네, 모든 기능을 무료로 쓸 수 있어요. 광고도 없어요.</p></details>
+        <details><summary>제 사진이 인터넷에 올라가나요?</summary><p>아니요. 사진과 얼굴 정보는 내 컴퓨터에만 저장돼요. 인터넷은 새 버전 확인과, 인물 기능을 처음 켤 때 얼굴 인식 모델을 내려받을 때만 써요.</p></details>
+        <details><summary>설치할 때 경고 창이 떠요. 괜찮나요?</summary><p>괜찮아요. 개인이 만든 프로그램이라 회사 인증을 받지 않아서 뜨는 창이에요. 윈도우는 "추가 정보 → 실행", 맥은 "시스템 설정 › 개인정보 보호 및 보안 › 그래도 열기"를 누르면 돼요.</p></details>
+        <details><summary>어떤 사진을 볼 수 있나요?</summary><p>JPG·PNG·WebP·GIF·BMP·TIFF 같은 사진을 볼 수 있어요. 맥에서는 아이폰 사진(HEIC)과 카메라 RAW 파일도 볼 수 있어요. 동영상과 PDF도 보기 › 파일 종류에서 켜면 함께 보여요.</p></details>
+        <details><summary>구글 드라이브에 있는 사진도 되나요?</summary><p>네. 내려받지 않은 사진도 미리보기로 보여 줘요. 사진이 아주 많으면 드라이브 앱에서 그 폴더를 "오프라인 사용"으로 바꾸면 훨씬 빨라져요.</p></details>
+        <details><summary>인물 분류가 가끔 틀려요.</summary><p>인물 화면 위쪽의 <b>정확도</b>를 "높음"으로 바꿔 보세요. 옆모습이 섞이면 <b>옆모습</b>을 "많이 돌린 얼굴 빼기"로 바꾸면 돼요. 사람마다 정면 사진 몇 장에 이름을 붙이면 점점 더 정확해져요.</p></details>
+        <details><summary>사용법을 더 자세히 알고 싶어요.</summary><p>프로그램 메뉴의 <b>도움말 › 사용 설명서</b>(F1)에 기능별 사용법과 단축키가 모두 있어요. 찾기 칸에 궁금한 말을 쓰면 바로 찾아 줘요.</p></details>
+        <details><summary>문제가 생겼어요.</summary><p>프로그램의 <b>도움말 › iSee 정보</b>에서 <b>오류 기록 보기</b>를 눌러 나온 파일을 <a href="https://hwansang.kr" rel="noopener">hwansang.kr</a>로 알려 주시면 고치는 데 큰 도움이 돼요.</p></details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="who"><b>iSee</b> · 만든 사람 <b>다있쌤 로디</b> · <a href="https://hwansang.kr" rel="noopener">hwansang.kr</a></div>
+    <div>개인이 직접 만든 무료 프로그램이라 오류가 있을 수 있어요. 중요한 사진은 미리 백업해 주세요. 프로그램을 쓰면서 생긴 데이터 손실에 대해 만든 사람은 책임지지 않아요. (자세한 내용은 프로그램의 도움말 › 면책 조항)</div>
+    <div>얼굴 인식 모델 YuNet(MIT)·SFace(Apache-2.0, OpenCV Zoo) · 지명 자료 GeoNames(CC BY 4.0)·admdongkor</div>
+  </div>
+</footer>
+
+<script>
+  // 내 컴퓨터(윈도우·맥)에 맞는 내려받기를 앞에 두고, 최신 버전 주소·크기를 GitHub에서 가져온다 (실패하면 적어 둔 0.1.6 그대로)
+  (function () {
+    var ua = navigator.userAgent || "";
+    var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+    var mobile = /Android|iPhone|iPad|iPod/i.test(ua) || (navigator.maxTouchPoints > 1 && /Mac/i.test(plat) && !/Macintosh/.test(ua));
+    var os = /Mac/i.test(plat) || /Mac OS X/.test(ua) ? "mac" : /Win/i.test(plat) || /Windows/.test(ua) ? "win" : null;
+    if (/iPhone|iPad|iPod/.test(ua)) os = null;
+    if (mobile) document.getElementById("mobile-note").style.display = "block";
+    if (os === "mac") {
+      var row = document.getElementById("hero-dl");
+      var mac = row.querySelector('[data-dl="mac"]'), win = row.querySelector('[data-dl="win"]');
+      row.insertBefore(mac, win);
+      mac.className = "btn primary"; win.className = "btn ghost";
+      document.querySelectorAll("[data-undo]").forEach(function (e) { e.textContent = "⌘Z"; });
+    }
+    if (os) {
+      var card = document.querySelector('[data-card="' + os + '"]');
+      if (card) { card.classList.add("mine"); card.parentNode.insertBefore(card, card.parentNode.firstChild); }
+    }
+    var mb = function (n) { return "약 " + Math.round(n / 1048576) + "MB"; };
+    fetch("https://api.github.com/repos/janghwansangai/isee-releases/releases/latest")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (rel) {
+        if (!rel || !rel.assets) return;
+        var find = function (re) { return rel.assets.filter(function (a) { return re.test(a.name); })[0]; };
+        var dmg = find(/\.dmg$/), exe = find(/setup\.exe$/);
+        var ver = String(rel.tag_name || "").replace(/^v/, "");
+        if (ver) document.querySelectorAll("[data-version]").forEach(function (e) { e.textContent = ver; });
+        if (dmg) { document.querySelectorAll('[data-dl="mac"]').forEach(function (a) { a.href = dmg.browser_download_url; }); document.querySelectorAll('[data-size="mac"]').forEach(function (e) { e.textContent = mb(dmg.size); }); }
+        if (exe) { document.querySelectorAll('[data-dl="win"]').forEach(function (a) { a.href = exe.browser_download_url; }); document.querySelectorAll('[data-size="win"]').forEach(function (e) { e.textContent = mb(exe.size); }); }
+      })
+      .catch(function () {});
+  })();
+</script>
+</body>
+</html>
