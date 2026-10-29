@@ -13,6 +13,8 @@
 <link rel="icon" type="image/png" href="/assets/favicon.png" />
 <link rel="apple-touch-icon" href="/assets/icon.png" />
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+<!-- 오류 신고 위젯 (오류 취합 센터). 버전은 아래 스크립트가 GitHub 최신 버전으로 맞춘다 -->
+<script src="https://script.google.com/macros/s/AKfycbxsRD7vRlEP9oKlvlDDPww8cYaDadTTIp1KrqYWSVU5qE5_gUh3bNUskBhHDlXH6FskvA/exec?asset=widget.js" data-app="isee" data-version="0.1.6" defer></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
 <style>
   :root {
@@ -271,6 +273,8 @@
   details[open] summary::after { content: "−"; }
   details p { margin: 0 0 18px 42px; color: var(--dim); }
 
+  .report { margin-top: 12px; padding: 9px 16px; border-radius: 12px; border: 0; background: var(--brand); color: #fff; font: inherit; font-size: 15px; font-weight: 750; cursor: pointer; }
+  .linkish { padding: 0; border: 0; background: none; color: var(--brand); font: inherit; text-decoration: underline; cursor: pointer; }
   footer { padding: 46px 0 60px; border-top: 1px solid var(--line); color: var(--faint); font-size: 14px; }
   footer .wrap { display: flex; flex-direction: column; gap: 10px; }
   footer .who { color: var(--dim); font-size: 15px; }
@@ -400,7 +404,7 @@
   <section class="hero" style="padding-top:56px">
     <div class="wrap">
       <div>
-        <span class="eyebrow"><b>●</b> 무료 · 윈도우 · 맥 · 버전 <span data-version>0.1.6</span></span>
+        <span class="eyebrow"><b>●</b> 무료 · 윈도우 · 맥 · 버전 <span data-ver>0.1.6</span></span>
         <h1>사진 정리,<br /><em>쉽고 빠르게!</em></h1>
         <p class="lead">
           <b>iSee(아이씨)</b>는 컴퓨터에 있는 사진을 <b>아주 빠르게 보고</b>, 남길 사진을 <b>고르고</b>,
@@ -656,7 +660,7 @@
       <div class="sec-head">
         <span class="tag">내려받기</span>
         <h2>지금 바로 받아 보세요</h2>
-        <p>최신 버전 <b data-version>0.1.6</b> · 내 컴퓨터에 맞는 것을 골라요.</p>
+        <p>최신 버전 <b data-ver>0.1.6</b> · 내 컴퓨터에 맞는 것을 골라요.</p>
       </div>
       <div class="dl-cards">
         <div class="dl-card" data-card="win">
@@ -701,7 +705,8 @@
         <details><summary>구글 드라이브에 있는 사진도 되나요?</summary><p>네. 내려받지 않은 사진도 미리보기로 보여 줘요. 사진이 아주 많으면 드라이브 앱에서 그 폴더를 "오프라인 사용"으로 바꾸면 훨씬 빨라져요.</p></details>
         <details><summary>인물 분류가 가끔 틀려요.</summary><p>인물 화면 위쪽의 <b>정확도</b>를 "높음"으로 바꿔 보세요. 옆모습이 섞이면 <b>옆모습</b>을 "많이 돌린 얼굴 빼기"로 바꾸면 돼요. 사람마다 정면 사진 몇 장에 이름을 붙이면 점점 더 정확해져요.</p></details>
         <details><summary>사용법을 더 자세히 알고 싶어요.</summary><p>프로그램 메뉴의 <b>도움말 › 사용 설명서</b>(F1)에 기능별 사용법과 단축키가 모두 있어요. 찾기 칸에 궁금한 말을 쓰면 바로 찾아 줘요.</p></details>
-        <details><summary>문제가 생겼어요.</summary><p>프로그램의 <b>도움말 › iSee 정보</b>에서 <b>오류 기록 보기</b>를 눌러 나온 파일을 <a href="https://hwansang.kr" rel="noopener">hwansang.kr</a>로 알려 주시면 고치는 데 큰 도움이 돼요.</p></details>
+        <details><summary>문제가 생겼어요. 어디에 알려요?</summary><p>화면 오른쪽 아래 <b>🐞 오류 신고</b> 버튼이나 프로그램의 <b>도움말 › 오류 신고</b>를 누르면 바로 알려 줄 수 있어요. 고쳤으면 하는 점도 보내 주세요. 프로그램이 꺼졌다면 <b>도움말 › iSee 정보 › 오류 기록 보기</b>로 찾은 파일 내용을 함께 붙여 주면 더 빨리 고칠 수 있어요.
+          <br /><button class="report" type="button" data-report>🐞 지금 오류 신고하기</button></p></details>
       </div>
     </div>
   </section>
@@ -709,7 +714,7 @@
 
 <footer>
   <div class="wrap">
-    <div class="who"><b>iSee</b> · 만든 사람 <b>다있쌤 로디</b> · <a href="https://hwansang.kr" rel="noopener">hwansang.kr</a></div>
+    <div class="who"><b>iSee</b> · 만든 사람 <b>다있쌤 로디</b> · <a href="https://hwansang.kr" rel="noopener">hwansang.kr</a> · <button class="linkish" type="button" data-report>오류 신고</button></div>
     <div>개인이 직접 만든 무료 프로그램이라 오류가 있을 수 있어요. 중요한 사진은 미리 백업해 주세요. 프로그램을 쓰면서 생긴 데이터 손실에 대해 만든 사람은 책임지지 않아요. (자세한 내용은 프로그램의 도움말 › 면책 조항)</div>
     <div>얼굴 인식 모델 YuNet(MIT)·SFace(Apache-2.0, OpenCV Zoo) · 지명 자료 GeoNames(CC BY 4.0)·admdongkor</div>
   </div>
@@ -735,6 +740,18 @@
       var card = document.querySelector('[data-card="' + os + '"]');
       if (card) { card.classList.add("mine"); card.parentNode.insertBefore(card, card.parentNode.firstChild); }
     }
+    // 오류 신고: 위젯이 늦게 뜨거나 막혔으면 신고 페이지를 새 창으로 연다
+    var REPORT = "https://script.google.com/macros/s/AKfycbxsRD7vRlEP9oKlvlDDPww8cYaDadTTIp1KrqYWSVU5qE5_gUh3bNUskBhHDlXH6FskvA/exec";
+    var latest = "0.1.6";
+    document.querySelectorAll("[data-report]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (window.BugReporter) window.BugReporter.open();
+        else window.open(REPORT + "?app=isee&v=" + encodeURIComponent(latest) + "&where=" + encodeURIComponent("소개 사이트"), "_blank", "noopener");
+      });
+    });
+    window.addEventListener("load", function () {
+      if (window.BugReporter) { window.BugReporter.setContext({ screen: "소개 사이트" }); window.BugReporter.setVersion(latest); }
+    });
     var mb = function (n) { return "약 " + Math.round(n / 1048576) + "MB"; };
     fetch("https://api.github.com/repos/janghwansangai/isee-releases/releases/latest")
       .then(function (r) { return r.ok ? r.json() : null; })
@@ -743,7 +760,11 @@
         var find = function (re) { return rel.assets.filter(function (a) { return re.test(a.name); })[0]; };
         var dmg = find(/\.dmg$/), exe = find(/setup\.exe$/);
         var ver = String(rel.tag_name || "").replace(/^v/, "");
-        if (ver) document.querySelectorAll("[data-version]").forEach(function (e) { e.textContent = ver; });
+        if (ver) {
+          latest = ver;
+          document.querySelectorAll("[data-ver]").forEach(function (e) { e.textContent = ver; });
+          if (window.BugReporter) window.BugReporter.setVersion(ver);
+        }
         if (dmg) { document.querySelectorAll('[data-dl="mac"]').forEach(function (a) { a.href = dmg.browser_download_url; }); document.querySelectorAll('[data-size="mac"]').forEach(function (e) { e.textContent = mb(dmg.size); }); }
         if (exe) { document.querySelectorAll('[data-dl="win"]').forEach(function (a) { a.href = exe.browser_download_url; }); document.querySelectorAll('[data-size="win"]').forEach(function (e) { e.textContent = mb(exe.size); }); }
       })

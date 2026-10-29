@@ -189,8 +189,10 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
     let manual = MenuItem::with_id(app, "manual", "사용 설명서", true, mac_accel("F1"))?;
     let homepage = MenuItem::with_id(app, "homepage", "홈페이지 (hwansang.kr)", true, None::<&str>)?;
     let disclaimer = MenuItem::with_id(app, "disclaimer", "면책 조항…", true, None::<&str>)?;
+    // 오류·고쳤으면 하는 점을 보내는 곳 (브라우저로 오류 취합 센터를 연다)
+    let bug = MenuItem::with_id(app, "bug_report", "오류 신고…", true, None::<&str>)?;
     #[cfg(target_os = "macos")]
-    top.push(Submenu::with_items(app, "도움말", true, &[&manual, &sep()?, &homepage, &disclaimer])?);
+    top.push(Submenu::with_items(app, "도움말", true, &[&manual, &bug, &sep()?, &homepage, &disclaimer])?);
     #[cfg(not(target_os = "macos"))]
     top.push(Submenu::with_items(
         app,
@@ -198,6 +200,7 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         true,
         &[
             &manual,
+            &bug,
             &sep()?,
             &MenuItem::with_id(app, "about", "iSee 정보 (만든 사람)…", true, None::<&str>)?,
             &homepage,

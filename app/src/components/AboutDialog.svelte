@@ -44,12 +44,14 @@
       <li>이 프로그램을 설치하거나 사용하면 위 내용에 동의한 것으로 봅니다.</li>
     </ol>
 
-    {#if info?.error_log}
-      <p class="log">
-        프로그램 오류 기록이 있습니다. 문제가 생기면 이 파일을 함께 보내 주시면 고치는 데 도움이 됩니다.
+    <p class="log">
+      오류가 생기거나 고쳤으면 하는 점이 있으면 알려 주세요.
+      <button class="link" onclick={() => api.openBugReport("iSee 정보")}>오류 신고</button>
+      {#if info?.error_log}
+        <br />프로그램 오류 기록이 있습니다. 신고할 때 이 파일 내용을 함께 붙여 주시면 고치는 데 도움이 됩니다.
         <button class="link" onclick={() => api.reveal(info!.error_log!)}>오류 기록 보기</button>
-      </p>
-    {/if}
+      {/if}
+    </p>
 
     <p class="credits">
       얼굴 인식 모델 YuNet(MIT)·SFace(Apache-2.0, OpenCV Zoo) · 지명 자료 GeoNames(CC BY 4.0)·admdongkor(통계청 행정동 경계)

@@ -128,7 +128,26 @@
   // 비교·비슷한 사진 화면이 덮고 있을 때 메뉴로 받아도 되는 것 (보이지 않는 그리드 선택을 지우거나 옮기지 않게)
   const OVERLAY_MENU_OK = new Set(["undo", "shell_install", "shell_uninstall", "check_update", "bg_panel", "analyze_ahead", "about", "disclaimer", "manual"]);
 
+  /** 오류 신고에 붙일 지금 화면 이름 (파일 이름·경로 같은 개인 정보는 넣지 않는다) */
+  function screenName(): string {
+    if (helpOpen) return "사용 설명서";
+    if (aboutOpen) return "iSee 정보";
+    if (store.editor) return "편집";
+    if (store.video) return "동영상";
+    if (store.compare) return "비교";
+    if (store.viewer >= 0) return "크게 보기";
+    if (store.similar) return "비슷한 사진";
+    if (store.organize) return "날짜·장소 정리";
+    if (store.people) return "인물";
+    return store.settings.view_mode === "list" ? "사진 목록(목록 보기)" : "사진 목록";
+  }
+
   function onMenu(id: string) {
+    // 오류 신고는 어느 화면에서든 연다 (편집기·동영상 포함)
+    if (id === "bug_report") {
+      api.openBugReport(screenName()).catch((e) => store.showToast(`${e}`, { error: true }));
+      return;
+    }
     // 편집기에서는 실행 취소가 편집 단계를 되돌린다
     if (store.editor) {
       if (id === "undo") editorView?.undo();

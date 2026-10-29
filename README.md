@@ -48,6 +48,10 @@
 내려받기 주소·버전·크기는 방문할 때 GitHub(isee-releases 최신 릴리스)에서 가져오므로, 새 버전을 내도 사이트는 고치지 않아도 됩니다.
 고친 뒤 올리기: 저장소 맨 위에서 `npx wrangler deploy` (`wrangler.jsonc`가 `site` 폴더만 올리고, 버전별 미리 보기 주소는 꺼 둠).
 
+**오류 신고**는 오류 취합 센터(Google Apps Script, 프로그램 ID `isee`)로 모입니다. 비밀 키는 쓰지 않습니다.
+- 사이트: 오른쪽 아래 🐞 오류 신고 버튼(위젯), 질문·맨 아래의 "오류 신고" (`site/index.html` 머리의 widget.js)
+- 프로그램: 도움말 › 오류 신고…, iSee 정보 창의 "오류 신고" → 브라우저로 신고 페이지 (앱 버전·지금 화면 이름을 붙임, `lib.rs`의 `bug_report_url`)
+
 ## 새 버전 내보내기 (개발자용)
 
 1. `app/src-tauri/tauri.conf.json`과 맨 위 `Cargo.toml`(workspace.package)의 `version`을 올리고 커밋합니다.

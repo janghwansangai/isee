@@ -1247,16 +1247,42 @@ pub const HOMEPAGE: &str = "https://hwansang.kr";
 /// 프로그램 오류 기록 (앱 데이터 폴더)
 const ERROR_LOG: &str = "errors.log";
 
+/// 오류 신고 (오류 취합 센터). 프로그램 ID·버전·지금 화면 이름을 붙여 브라우저로 연다. 비밀 키는 필요 없다.
+const BUG_REPORT: &str = "https://script.google.com/macros/s/AKfycbxsRD7vRlEP9oKlvlDDPww8cYaDadTTIp1KrqYWSVU5qE5_gUh3bNUskBhHDlXH6FskvA/exec";
+
+/// 주소를 기본 브라우저로 연다 (이 파일에 적힌 주소만 넘긴다)
+fn open_url(url: &str) -> CmdResult<()> {
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg(url).spawn();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let r = std::process::Command::new("xdg-open").arg(url).spawn();
+    r.map(|_| ()).map_err(err)
+}
+
 /// 홈페이지를 기본 브라우저로 연다 (주소는 고정, 화면에서 다른 주소를 넘길 수 없다)
 #[tauri::command]
 fn open_homepage() -> CmdResult<()> {
-    #[cfg(target_os = "macos")]
-    let r = std::process::Command::new("open").arg(HOMEPAGE).spawn();
-    #[cfg(windows)]
-    let r = std::process::Command::new("explorer").arg(HOMEPAGE).spawn();
-    #[cfg(not(any(target_os = "macos", windows)))]
-    let r = std::process::Command::new("xdg-open").arg(HOMEPAGE).spawn();
-    r.map(|_| ()).map_err(err)
+    open_url(HOMEPAGE)
+}
+
+/// 오류 신고 주소: 프로그램 ID, 버전, 지금 화면 이름(40자까지)을 붙인다
+fn bug_report_url(version: &str, place: &str) -> String {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+    let enc = |s: &str| utf8_percent_encode(s, NON_ALPHANUMERIC).to_string();
+    let mut url = format!("{BUG_REPORT}?app=isee&v={}", enc(version));
+    let place: String = place.trim().chars().take(40).collect();
+    if !place.is_empty() {
+        url.push_str(&format!("&where={}", enc(&place)));
+    }
+    url
+}
+
+/// 오류 신고 페이지를 연다. 화면에서는 지금 화면 이름만 받는다 (주소는 고정)
+#[tauri::command]
+fn open_bug_report(app: AppHandle, place: String) -> CmdResult<()> {
+    open_url(&bug_report_url(&app.package_info().version.to_string(), &place))
 }
 
 #[derive(Serialize)]
@@ -1668,6 +1694,7 @@ pub fn run() {
             faces_crops_cancel,
             faces_redo_turn,
             open_homepage,
+            open_bug_report,
             app_info,
             faces_report,
             faces_name,
@@ -1708,4 +1735,17 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bug_report_url_is_fixed_and_encoded() {
+        let u = super::bug_report_url("0.1.6", " 크게 보기 ");
+        assert!(u.starts_with(super::BUG_REPORT));
+        assert!(u.ends_with("?app=isee&v=0%2E1%2E6&where=%ED%81%AC%EA%B2%8C%20%EB%B3%B4%EA%B8%B0"), "{u}");
+        // 화면 이름에 &·= 이 있어도 다른 값을 끼워 넣지 못한다
+        assert!(super::bug_report_url("1", "a&app=x").ends_with("&where=a%26app%3Dx"));
+        assert!(!super::bug_report_url("1", "  ").contains("where"));
+    }
 }
