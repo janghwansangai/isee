@@ -55,7 +55,7 @@
 ## 새 버전 내보내기 (개발자용)
 
 1. `app/src-tauri/tauri.conf.json`과 맨 위 `Cargo.toml`(workspace.package)의 `version`을 올리고 커밋합니다.
-2. 태그를 올립니다: `git tag v0.1.1 && git push origin main v0.1.1` → GitHub Actions가 맥·윈도우 설치 파일과 업데이트 파일을 만들어 비공개 저장소의 릴리스 초안에 올립니다.
+2. 태그를 올립니다: `git tag v0.1.1 && git push origin main v0.1.1` → GitHub Actions가 맥·윈도우 설치 파일과 업데이트 파일을 만들어 코드 저장소의 릴리스 초안에 올립니다 (초안은 저장소 주인만 봄).
 3. 맥에서 `scripts/publish.sh v0.1.1` → 공개 배포 저장소(isee-releases)에 올라가고, 사용자 앱이 업데이트를 받습니다.
 
 업데이트 서명 키는 이 맥의 `~/.tauri/isee-updater.key`(비밀번호는 같은 폴더)에만 있고, 저장소에는 GitHub Secrets로만 들어 있습니다. **키를 잃어버리면 기존 사용자에게 업데이트를 보낼 수 없으니** 따로 안전하게 보관하세요.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 비공개 저장소(isee)의 릴리스 초안을 공개 배포 저장소(isee-releases)로 옮긴다.
+# 코드 저장소(isee)의 릴리스 초안을 공개 배포 저장소(isee-releases)로 옮긴다.
 # 앱의 자동 업데이트는 isee-releases의 latest.json을 본다.
 #   scripts/publish.sh v0.1.0
 set -euo pipefail
