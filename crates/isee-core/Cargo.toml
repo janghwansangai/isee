@@ -33,5 +33,9 @@ objc2-core-graphics = "0.3.2"
 objc2-foundation = "0.3.2"
 objc2-quick-look-thumbnailing = "0.3.2"
 
+[target.'cfg(unix)'.dependencies]
+# 남은 디스크 공간 (클라우드 사진 내려받기 전 확인). 이미 다른 크레이트가 쓰는 것이라 새로 늘지 않는다.
+libc = "0.2"
+
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 trash = "5.2.9"

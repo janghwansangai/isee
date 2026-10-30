@@ -132,6 +132,42 @@ export interface PeopleReport {
   ms: number;
 }
 
+/** 클라우드 사진 내려받기 진행 */
+export interface CloudProgress {
+  done: number;
+  total: number;
+  /** 그중 내려받지 못한 수 */
+  failed: number;
+  bytes_done: number;
+  bytes_total: number;
+  /** 남은 시간 어림 (초). 몇 장 받아 본 뒤부터 */
+  eta_secs: number | null;
+  paused: boolean;
+}
+
+/** 클라우드에만 있어 분석하지 못한 사진과 iSee가 내려받아 둔 사진 */
+export interface CloudEstimate {
+  /** 내려받아 분석할 사진 수와 크기 */
+  count: number;
+  bytes: number;
+  /** 이 컴퓨터의 남은 공간 (모르면 null) */
+  free: number | null;
+  /** 클라우드 이름 (예: "구글 드라이브") */
+  provider: string | null;
+  /** iSee가 내려받아 지금도 이 컴퓨터에 있는 사진 (수, 바이트) */
+  downloaded: [number, number];
+  /** iSee가 다운로드를 제거할 수 있는 컴퓨터인가 (맥) */
+  can_evict: boolean;
+  progress: CloudProgress;
+}
+
+/** 내려받기가 끝나 분석을 이어서 시작함 */
+export interface CloudDone {
+  progress: CloudProgress;
+  faces: boolean;
+  analysis: [number, number];
+}
+
 /** 분석 시간 어림 (시작 전에 묻기용) */
 export interface AnalysisEstimate {
   total: number;
@@ -304,6 +340,9 @@ export interface BgStatus {
   similar_label: string;
   faces_label: string;
   faces: [number, number];
+  /** 클라우드 사진 내려받기와 그 범위 이름 */
+  cloud: CloudProgress;
+  cloud_label: string;
 }
 
 /** 시작 단계별 시각 (웹페이지 시작 기준 ms) */
@@ -376,6 +415,12 @@ export const api = {
   analysisEstimate: (sc: Scope) =>
     invoke<AnalysisEstimate>("analysis_estimate", { path: sc.path, extra: sc.extra, recursive: sc.recursive }),
   stopAnalysis: () => invoke("stop_analysis"),
+  cloudEstimate: (sc: Scope, faces: boolean) =>
+    invoke<CloudEstimate>("cloud_estimate", { path: sc.path, extra: sc.extra, recursive: sc.recursive, faces }),
+  cloudFetch: (sc: Scope, faces: boolean) =>
+    invoke<CloudProgress>("cloud_fetch", { path: sc.path, extra: sc.extra, recursive: sc.recursive, faces }),
+  cloudStop: () => invoke("cloud_stop"),
+  cloudEvict: () => invoke<{ count: number; bytes: number; failed: number; error: string | null }>("cloud_evict"),
   similarReport: (sc: Scope, options: SimilarOptions) =>
     invoke<SimilarReport>("similar_report", { path: sc.path, options, extra: sc.extra, recursive: sc.recursive }),
   organizeScan: (paths: string[], folder: string, recursive: boolean) =>

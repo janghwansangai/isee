@@ -1,11 +1,15 @@
 import { SvelteSet } from "svelte/reactivity";
 import { ask, message, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import {
   api,
   baseName,
   fmtDuration,
   fmtSize,
   scopeLabel,
+  type CloudDone,
+  type CloudEstimate,
+  type CloudProgress,
   type ConvertSpec,
   type Entry,
   type Mark,
@@ -270,6 +274,128 @@ class Store {
       okLabel: "분석 시작",
       cancelLabel: "취소",
     });
+  }
+
+  // ───── 클라우드에만 있는 사진 내려받아 분석 ─────
+
+  /** 클라우드 사진 내려받기 진행 (앱 전체에 하나, 모든 화면이 함께 본다) */
+  cloud = $state.raw<CloudProgress | null>(null);
+  /** 내려받기가 끝나 이어서 하는 분석이 끝나면 알린다 */
+  private cloudWaiting: { faces: boolean; got: number; failed: number } | null = null;
+
+  /** 클라우드에만 있는 사진을 내려받아 분석할지 묻고 시작한다. faces: 얼굴 분석. 시작하면 true */
+  async fetchCloud(sc: Scope, faces: boolean): Promise<boolean> {
+    let est: CloudEstimate;
+    try {
+      est = await api.cloudEstimate(sc, faces);
+    } catch (e) {
+      this.showToast(`${e}`, { error: true });
+      return false;
+    }
+    if (!est.count) {
+      this.showToast("내려받아 분석할 사진이 없습니다");
+      return false;
+    }
+    const n = `${est.count.toLocaleString()}장`;
+    const size = fmtSize(est.bytes);
+    const where = est.provider ?? "클라우드";
+    if (est.free != null && est.free < est.bytes + 2 ** 30) {
+      await message(
+        `내려받을 사진은 ${size}인데 이 컴퓨터의 남은 공간은 ${fmtSize(est.free)}입니다.\n\n` +
+          `공간을 비운 뒤 다시 해 주세요. 받고 나서도 1GB는 남아 있어야 합니다.`,
+        { title: "저장 공간이 모자랍니다", kind: "warning", okLabel: "확인" },
+      );
+      return false;
+    }
+    const free = est.free != null ? ` (남은 공간 ${fmtSize(est.free)})` : "";
+    // 처음 몇 장을 받아 보기 전에는 속도를 모르므로 초당 2MB로 대충 어림한다
+    const guess = fmtDuration((est.bytes / 2e6) * 1000);
+    const removal = est.can_evict
+      ? `· 이 화면의 "다운로드 제거" 단추를 누르면 iSee가 받은 사진만 한 번에 지웁니다.\n` +
+        `· Finder에서 사진이나 폴더를 오른쪽 클릭 → "다운로드 제거"로도 할 수 있습니다.`
+      : `· 파일 탐색기에서 폴더를 오른쪽 클릭 → "공간 확보"(OneDrive)로 지울 수 있습니다.`;
+    const ok = await ask(
+      `클라우드에만 있는 사진 ${n}(${size})을 ${where}에서 이 컴퓨터로 내려받아 ${faces ? "얼굴을" : "비슷한 사진을"} 분석합니다.\n\n` +
+        `· 내려받기는 백그라운드에서 2장씩 천천히 해서 사진 보기는 느려지지 않습니다. 화면을 닫거나 다른 사진을 봐도 계속합니다.\n` +
+        `· 시간이 걸립니다. 인터넷 속도에 따라 다르며 ${guess} 걸릴 수 있습니다. 시작하면 남은 시간과 끝날 시각을 보여 드리고, 다 되면 알려 드립니다.\n` +
+        `· 이 컴퓨터의 저장 공간을 ${size} 씁니다${free}.\n` +
+        `· 클라우드의 사진은 지우거나 바꾸지 않습니다. 내려받은 사진은 클라우드 사진과 같은 파일입니다.\n\n` +
+        `분석이 끝나면 내려받은 사진을 이 컴퓨터에서만 지워 공간을 되돌릴 수 있습니다. 클라우드의 사진과 분석 결과는 그대로 남습니다.\n` +
+        removal,
+      { title: "클라우드 사진 내려받아 분석", kind: "info", okLabel: "내려받아 분석", cancelLabel: "취소" },
+    );
+    if (!ok) return false;
+    try {
+      this.cloud = await api.cloudFetch(sc, faces);
+      this.showToast(`${n} 내려받기를 시작했습니다. 아래 "백그라운드 작업"에서 남은 시간을 볼 수 있습니다.`);
+      return true;
+    } catch (e) {
+      this.showToast(`내려받기를 시작하지 못했습니다: ${e}`, { error: true });
+      return false;
+    }
+  }
+
+  /** iSee가 내려받은 사진의 다운로드를 제거할지 묻고 제거한다 (클라우드의 사진은 그대로). 제거하면 true */
+  async evictCloud(count: number, bytes: number, provider: string | null): Promise<boolean> {
+    const ok = await ask(
+      `iSee가 분석하려고 내려받은 사진 ${count.toLocaleString()}장(${fmtSize(bytes)})을 이 컴퓨터에서 지우고 다시 클라우드에만 둡니다.\n\n` +
+        `· ${provider ?? "클라우드"}의 사진은 지워지지 않습니다.\n` +
+        `· 분석 결과는 그대로 남아 다시 내려받지 않아도 됩니다.\n` +
+        `· 나중에 사진을 크게 보면 그때 다시 내려받습니다.`,
+      { title: "다운로드 제거", kind: "info", okLabel: "다운로드 제거", cancelLabel: "취소" },
+    );
+    if (!ok) return false;
+    try {
+      const r = await api.cloudEvict();
+      if (r.failed)
+        this.showToast(
+          `${r.count.toLocaleString()}장(${fmtSize(r.bytes)})의 다운로드를 제거했고 ${r.failed.toLocaleString()}장은 제거하지 못했습니다` +
+            `${r.error ? ` (${r.error})` : ""}. Finder에서 "오프라인으로 사용 가능"을 켠 폴더의 사진은 제거되지 않습니다.`,
+          { error: true },
+        );
+      else this.showToast(`${r.count.toLocaleString()}장(${fmtSize(r.bytes)})의 다운로드를 제거했습니다. 클라우드의 사진과 분석 결과는 그대로입니다.`);
+      // 다시 클라우드에만 있게 된 사진에 ☁ 표시
+      this.reload();
+      return true;
+    } catch (e) {
+      this.showToast(`${e}`, { error: true });
+      return false;
+    }
+  }
+
+  /** 내려받기가 끝남: 이어서 시작한 분석까지 끝나면 알린다 */
+  cloudDone(d: CloudDone) {
+    this.cloud = d.progress;
+    // 받은 사진의 ☁ 표시를 지운다
+    this.reload();
+    this.cloudWaiting = { faces: d.faces, got: d.progress.done - d.progress.failed, failed: d.progress.failed };
+    const [done, total] = d.analysis;
+    if (done >= total) {
+      this.cloudAnalyzed(d.faces);
+      return;
+    }
+    // 사진이 적으면 분석이 이 알림보다 먼저 끝날 수 있어 한 번 더 본다
+    api.stats().then((s) => {
+      const [dn, tt] = d.faces ? s.bg.faces : s.bg.similar;
+      if (tt > 0 && dn >= tt) this.cloudAnalyzed(d.faces);
+    });
+  }
+
+  /** 분석 진행이 끝까지 갔을 때 (내려받기 뒤 분석을 기다리던 중이면 알린다) */
+  cloudAnalyzed(faces: boolean) {
+    const w = this.cloudWaiting;
+    if (!w || w.faces !== faces) return;
+    this.cloudWaiting = null;
+    const what = faces ? "얼굴" : "비슷한 사진";
+    let text = `클라우드 사진 ${w.got.toLocaleString()}장을 내려받아 ${what} 분석을 마쳤습니다.`;
+    if (w.failed) text += `\n\n${w.failed.toLocaleString()}장은 내려받지 못했습니다. 인터넷 연결을 확인한 뒤 다시 누르면 그 사진만 받습니다.`;
+    if (w.got)
+      text +=
+        `\n\n다 보셨으면 "${faces ? "인물" : "비슷한 사진"}" 화면의 "다운로드 제거" 단추로 이 컴퓨터에 받은 사진을 지워 공간을 되돌릴 수 있습니다. ` +
+        `클라우드의 사진과 분석 결과는 그대로 남습니다.`;
+    // 다른 프로그램을 보고 있으면 Dock(작업 표시줄) 아이콘으로도 알린다
+    if (!document.hasFocus()) getCurrentWindow().requestUserAttention(UserAttentionType.Informational).catch(() => undefined);
+    message(text, { title: "클라우드 사진 분석을 마쳤습니다", kind: "info", okLabel: "확인" });
   }
 
   /** 너무 많아 일부만 모았을 때 (프로그램이 멈추거나 메모리가 모자라지 않게 한도에서 멈춤) */

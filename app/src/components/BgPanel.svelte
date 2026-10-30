@@ -1,7 +1,7 @@
 <script lang="ts">
-  // 백그라운드 작업 현황과 조절: 썸네일 미리 만들기(켜기·끄기), 비슷한 사진·얼굴 분석(중단), 모두 잠시 멈춤.
+  // 백그라운드 작업 현황과 조절: 썸네일 미리 만들기(켜기·끄기), 비슷한 사진·얼굴 분석·클라우드 사진 내려받기(중단), 모두 잠시 멈춤.
   // 빨리 골라야 할 때는 모두 멈추면 CPU를 보기에만 쓴다.
-  import { api, type BgStatus } from "../lib/api";
+  import { api, fmtDuration, fmtSize, type BgStatus } from "../lib/api";
   import { store } from "../lib/store.svelte";
 
   let { bg, onclose }: { bg: BgStatus | null; onclose: () => void } = $props();
@@ -75,6 +75,20 @@
       </div>
       <button class="btn" disabled={busy || !running(bg.faces)} onclick={() => act("stop_faces")}>중단</button>
     </div>
+    {#if bg.cloud.total}
+      <div class="row">
+        <div class="what">
+          <b>클라우드 사진 내려받기{#if bg.cloud_label}<span class="label">{" · "}{bg.cloud_label}</span>{/if}</b>
+          <span class="state cloud">
+            {#if bg.cloud.done < bg.cloud.total}{bg.paused ? "멈춤" : "실행 중"} · {bg.cloud.done.toLocaleString()} / {bg.cloud.total.toLocaleString()}장
+              ({fmtSize(bg.cloud.bytes_done)} / {fmtSize(bg.cloud.bytes_total)}){#if !bg.paused && bg.cloud.eta_secs != null}{" · "}{fmtDuration(bg.cloud.eta_secs * 1000)} 남음{/if}
+            {:else}끝남 · {(bg.cloud.done - bg.cloud.failed).toLocaleString()}장 받음{#if bg.cloud.failed}{" · "}{bg.cloud.failed.toLocaleString()}장 실패{/if}{/if}
+          </span>
+          <span class="desc">"내려받아 분석"을 누르면 2장씩 받고, 다 받으면 이어서 분석합니다. 끝나면 알려 드립니다.</span>
+        </div>
+        <button class="btn" disabled={busy || bg.cloud.done >= bg.cloud.total} onclick={() => act("stop_cloud")}>중단</button>
+      </div>
+    {/if}
     <button class="btn ahead" disabled={!store.path} onclick={() => store.analyzeAhead()} title="지금 보는 범위를 화면 없이 뒤에서 분석해 둡니다. 다 되면 알려 드립니다.">
       지금 보는 사진 분석 미리 해 두기
     </button>

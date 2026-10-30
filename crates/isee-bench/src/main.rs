@@ -106,6 +106,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Some("cloud") => cloud_bench(Path::new(args.get(2).expect("클라우드 폴더 경로"))),
         Some("convert") => convert_bench(Path::new(args.get(2).expect("폴더 경로"))),
         Some("run") => run(
             Path::new(args.get(2).expect("폴더 경로")),
@@ -422,6 +423,64 @@ fn gen_similar(dir: &Path) -> anyhow::Result<()> {
 
 fn set_time(p: &Path, t: std::time::SystemTime) -> anyhow::Result<()> {
     std::fs::File::options().write(true).open(p)?.set_modified(t)?;
+    Ok(())
+}
+
+/// 클라우드에만 있는 사진 내려받기 → 분석 → 다운로드 제거를 실제 드라이브 폴더로 확인한다.
+/// 사진은 지우지 않는다 (받았다가 다시 클라우드에만 둔다). 분석 결과가 제거 뒤에도 남는지 본다.
+fn cloud_bench(dir: &Path) -> anyhow::Result<()> {
+    use isee_core::analysis::{self, FeatureStore};
+    use isee_core::cloud::{Fetched, Fetcher};
+    let reqs = |dir: &Path| -> anyhow::Result<Vec<Req>> {
+        Ok(listing::list_dir(dir, false)?
+            .into_iter()
+            .filter(|e| e.kind == isee_core::formats::Kind::Image)
+            .enumerate()
+            .map(|(i, e)| Req { path: e.path, size: e.size, mtime: e.mtime, index: i as i64 })
+            .collect())
+    };
+    let before = reqs(dir)?;
+    let cloudy: Vec<&Req> = before.iter().filter(|r| listing::is_online_only(Path::new(&r.path))).collect();
+    let bytes: u64 = cloudy.iter().map(|r| r.size).sum();
+    println!("사진 {}장 · 클라우드에만 {}장 {:.1}MB", before.len(), cloudy.len(), bytes as f64 / 1e6);
+    anyhow::ensure!(!cloudy.is_empty(), "클라우드에만 있는 사진이 없습니다");
+    let tmp = std::env::temp_dir().join(format!("isee-cloud-bench-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp)?;
+    let fetcher = Fetcher::new(Fetched::open(Some(&tmp.join("downloads.db")))?, 2);
+    fetcher.set_progress(std::sync::Arc::new(|p| {
+        println!(
+            "  {} / {}장 · {:.1} / {:.1}MB · 남은 시간 {}",
+            p.done,
+            p.total,
+            p.bytes_done as f64 / 1e6,
+            p.bytes_total as f64 / 1e6,
+            p.eta_secs.map_or("계산 중".into(), |s| format!("{s}초"))
+        );
+    }));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t = Instant::now();
+    fetcher.start(cloudy.iter().map(|r| (r.path.clone(), r.size)).collect(), Box::new(move |p| tx.send(p).unwrap()));
+    let p = rx.recv()?;
+    let secs = t.elapsed().as_secs_f64();
+    println!("내려받기 {}장 (실패 {}) · {:.1}초 · {:.1}MB/s", p.done - p.failed, p.failed, secs, p.bytes_done as f64 / 1e6 / secs);
+    let local = cloudy.iter().filter(|r| !listing::is_online_only(Path::new(&r.path))).count();
+    println!("받은 뒤 이 컴퓨터에 있음: {local} / {}장 · 기록 {:?}", cloudy.len(), fetcher.downloaded());
+    let store = FeatureStore::open(Some(&tmp.join("analysis.db")))?;
+    let mut ok = 0;
+    for r in &cloudy {
+        if let Ok(f) = analysis::compute(Path::new(&r.path), r.mtime) {
+            store.put(r, &f);
+            ok += 1;
+        }
+    }
+    println!("분석 {ok}장");
+    let ev = fetcher.evict_all()?;
+    println!("다운로드 제거 {}장 {:.1}MB · 실패 {} {:?}", ev.count, ev.bytes as f64 / 1e6, ev.failed, ev.error);
+    let after = reqs(dir)?;
+    let back = after.iter().filter(|r| listing::is_online_only(Path::new(&r.path))).count();
+    let kept = after.iter().filter(|r| store.get(r).is_some()).count();
+    println!("제거 뒤 클라우드에만: {back}장 · 같은 파일 크기·수정 시각으로 분석 결과 찾음: {kept}장 · 기록 {:?}", fetcher.downloaded());
+    std::fs::remove_dir_all(&tmp).ok();
     Ok(())
 }
 

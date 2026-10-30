@@ -7,6 +7,7 @@
   import { store } from "../lib/store.svelte";
   import { api, baseName, faceUrl, fmtSize, isMac, type PeopleReport, type PersonGroup, type Settings, scopeLabel } from "../lib/api";
   import Icon from "./Icon.svelte";
+  import CloudBar from "./CloudBar.svelte";
 
   // 연 범위 (지금 폴더, 함께 보는 다른 폴더). 하위 폴더 포함은 이 화면에서도 바꿀 수 있다.
   const base = store.people!;
@@ -121,8 +122,10 @@
     timer = window.setTimeout(refresh, ms);
   }
 
+  /** 클라우드에만 있는 사진 (분석 시작으로는 할 수 없고 "내려받아 분석"으로) */
+  let cloudCount = $state(0);
   /** 남은 사진 수와 예상 시간 (사진 한 장 약 0.1초, 작업 3개 동시) */
-  let remaining = $derived(report ? Math.max(0, report.total - report.analyzed) : 0);
+  let remaining = $derived(report ? Math.max(0, report.total - report.analyzed - cloudCount) : 0);
   let estimate = $derived.by(() => {
     const sec = Math.ceil((remaining * 0.1) / 3);
     return sec < 60 ? `약 ${Math.max(1, sec)}초` : `약 ${Math.ceil(sec / 60)}분`;
@@ -447,6 +450,7 @@
         {/if}
       </div>
     {/if}
+    <CloudBar {scope} faces banner refresh={report?.analyzed ?? 0} bind:count={cloudCount} />
     {#if report && store.settings.face_profile !== "all" && report.no_turn > 0 && !analyzing}
       <div class="banner">
         <span>

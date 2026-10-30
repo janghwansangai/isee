@@ -3,6 +3,7 @@
 
 pub mod analysis;
 pub mod cache;
+pub mod cloud;
 pub mod convert;
 pub mod decode;
 pub mod faces;

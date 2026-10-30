@@ -18,6 +18,7 @@
     type SimilarRule,
   } from "../lib/api";
   import Icon from "./Icon.svelte";
+  import CloudBar from "./CloudBar.svelte";
 
   type Group = SimilarReport["groups"][number];
   type Tab = "groups" | "duplicates" | "blurry" | "dark" | "bright";
@@ -215,15 +216,8 @@
       </span>
     {:else if report}
       <span class="dim small">{label(report.analyzed)} 분석 완료</span>
-      {#if report.cloud}
-        <span
-          class="cloud-note"
-          title="구글 드라이브·iCloud 등에서 아직 내려받지 않은 사진은 읽으면 내려받기가 시작되므로 분석하지 않습니다. Finder에서 폴더를 '오프라인으로 사용 가능'으로 하거나 사진을 내려받으면 다음에 분석합니다."
-        >
-          ☁ 클라우드에만 있는 {label(report.cloud)}은 내려받지 않아 분석하지 않음
-        </span>
-      {/if}
     {/if}
+    <CloudBar {scope} refresh={report?.analyzed ?? 0} />
     <span class="spacer"></span>
     <button class="icon-btn" title="닫기 (Esc)" onclick={close}><Icon name="close" /></button>
   </div>
@@ -438,10 +432,6 @@
   }
   .spacer {
     flex: 1;
-  }
-  .cloud-note {
-    font-size: 12px;
-    color: #9fc4ff;
   }
   .progress {
     display: flex;

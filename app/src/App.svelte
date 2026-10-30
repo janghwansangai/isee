@@ -13,6 +13,8 @@
     mark,
     parentOf,
     startMarks,
+    type CloudDone,
+    type CloudProgress,
     type OutFormat,
     type Settings,
     type Stats,
@@ -57,6 +59,7 @@
     if (b.thumbs) parts.push(`썸네일 ${b.thumbs.toLocaleString()}장`);
     if (b.similar[1] && b.similar[0] < b.similar[1]) parts.push(`비슷한 사진 ${b.similar[1] - b.similar[0]}장`);
     if (b.faces[1] && b.faces[0] < b.faces[1]) parts.push(`얼굴 ${b.faces[1] - b.faces[0]}장`);
+    if (b.cloud.done < b.cloud.total) parts.push(`클라우드 내려받기 ${(b.cloud.total - b.cloud.done).toLocaleString()}장`);
     if (b.paused) return parts.length ? `⏸ 멈춤 · ${parts.join(" · ")} 남음` : "⏸ 멈춤";
     return parts.length ? `작업 중 · ${parts.join(" · ")} 남음` : "";
   });
@@ -636,8 +639,14 @@
       }),
       listen<string>("menu", (e) => onMenu(e.payload)),
       // "분석 미리 해 두기"가 끝나면 알린다 (비슷한 사진 화면을 연 상태면 그 화면이 보여 주므로 생략)
+      listen<CloudProgress>("cloud-progress", (e) => (store.cloud = e.payload)),
+      listen<CloudDone>("cloud-done", (e) => store.cloudDone(e.payload)),
+      listen<[number, number]>("faces-progress", (e) => {
+        if (e.payload[1] > 0 && e.payload[0] >= e.payload[1]) store.cloudAnalyzed(true);
+      }),
       listen<[number, number]>("analysis-progress", (e) => {
         const [done, total] = e.payload;
+        if (total > 0 && done >= total) store.cloudAnalyzed(false);
         if (store.aheadSimilar && total > 0 && done >= total) {
           store.aheadSimilar = false;
           const cloud = stats?.bg.similar_cloud ?? 0;

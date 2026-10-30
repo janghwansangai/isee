@@ -6,6 +6,7 @@ mod shell;
 
 use isee_core::analysis::{AnalysisService, FeatureStore};
 use isee_core::cache::ThumbCache;
+use isee_core::cloud;
 use isee_core::convert;
 use isee_core::rename;
 use isee_core::similar;
@@ -55,6 +56,9 @@ pub struct AppState {
     /// 지금(또는 마지막으로) 분석하는 범위 이름 (백그라운드 작업 창에 보여 준다)
     similar_label: Mutex<String>,
     faces_label: Mutex<String>,
+    /// 클라우드에만 있는 사진 내려받기 (사용자가 고른 때만) · 내려받는 범위 이름
+    pub cloud: cloud::Fetcher,
+    cloud_label: Mutex<String>,
     /// 얼굴별 분류 (8단계, 선택 모듈)
     pub faces: FaceService,
     models_dir: PathBuf,
@@ -668,6 +672,121 @@ async fn similar_report(
     })
     .await
     .map_err(err)?
+}
+
+// ───────────────────────── 클라우드 사진 내려받아 분석 ─────────────────────────
+
+/// 범위 안에서 클라우드에만 있고 아직 분석하지 않은 사진 (faces: 얼굴 분석 기준, 아니면 비슷한 사진 기준)
+fn cloud_todo(state: &AppState, sc: &Scope, faces: bool) -> CmdResult<Vec<Req>> {
+    let cloudy: Vec<Req> = scope_images(state, sc)?.into_iter().filter(|r| listing::is_online_only(Path::new(&r.path))).collect();
+    if faces {
+        let db = state.faces.db();
+        return Ok(cloudy.into_iter().filter(|r| !db.analyzed(r)).collect());
+    }
+    let feats = state.analysis.features(&cloudy);
+    Ok(cloudy.into_iter().zip(feats).filter(|(_, f)| f.is_none()).map(|(r, _)| r).collect())
+}
+
+#[derive(Serialize)]
+struct CloudEstimate {
+    /// 내려받아 분석할 사진 수와 크기
+    count: usize,
+    bytes: u64,
+    /// 이 컴퓨터의 남은 공간 (알 수 없으면 없음)
+    free: Option<u64>,
+    /// 클라우드 이름 (예: "구글 드라이브")
+    provider: Option<&'static str>,
+    /// iSee가 내려받아 지금도 이 컴퓨터에 있는 사진 (수, 바이트)
+    downloaded: (usize, u64),
+    /// iSee가 다운로드를 제거할 수 있는 컴퓨터인가 (맥)
+    can_evict: bool,
+    progress: cloud::Progress,
+}
+
+#[tauri::command]
+async fn cloud_estimate(app: AppHandle, path: String, extra: Option<Vec<String>>, recursive: Option<bool>, faces: bool) -> CmdResult<CloudEstimate> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let sc = Scope::new(path, extra, recursive);
+        let todo = cloud_todo(&state, &sc, faces)?;
+        Ok(CloudEstimate {
+            count: todo.len(),
+            bytes: todo.iter().map(|r| r.size).sum(),
+            free: cloud::free_space(Path::new(&sc.path)),
+            provider: sc.roots().iter().find_map(|r| listing::cloud_drive(r)),
+            downloaded: state.cloud.downloaded(),
+            can_evict: cloud::CAN_EVICT,
+            progress: state.cloud.progress(),
+        })
+    })
+    .await
+    .map_err(err)?
+}
+
+/// 내려받기가 끝나 분석을 이어서 시작했음 ("cloud-done" 이벤트)
+#[derive(Clone, Serialize)]
+struct CloudDone {
+    progress: cloud::Progress,
+    faces: bool,
+    /// 이어서 시작한 분석 (끝난 수, 전체)
+    analysis: (usize, usize),
+}
+
+/// 클라우드에만 있는 사진을 백그라운드에서 2장씩 내려받고, 다 받으면 그 범위를 이어서 분석한다.
+/// 진행은 "cloud-progress", 끝나면 "cloud-done" 이벤트로 알린다.
+#[tauri::command]
+async fn cloud_fetch(app: AppHandle, path: String, extra: Option<Vec<String>>, recursive: Option<bool>, faces: bool) -> CmdResult<cloud::Progress> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let sc = Scope::new(path, extra, recursive);
+        if faces && !isee_core::faces::installed(&state.models_dir) {
+            return Err("얼굴 분류 기능이 설치되지 않았습니다".to_string());
+        }
+        let todo = cloud_todo(&state, &sc, faces)?;
+        let bytes: u64 = todo.iter().map(|r| r.size).sum();
+        // 다 받고도 1GB는 남아야 한다 (컴퓨터가 느려지거나 다른 프로그램이 멈추지 않게)
+        if let Some(free) = cloud::free_space(Path::new(&sc.path))
+            && free < bytes + (1 << 30)
+        {
+            let gb = |b: u64| b as f64 / 1e9;
+            return Err(format!("이 컴퓨터의 남은 공간({:.1}GB)이 모자랍니다. 내려받을 사진은 {:.1}GB입니다.", gb(free), gb(bytes)));
+        }
+        *state.cloud_label.lock() = scope_label(&sc);
+        let handle = app.clone();
+        let then: cloud::DoneFn = Box::new(move |progress| {
+            let state = handle.state::<AppState>();
+            let reqs = scope_images(&state, &sc).unwrap_or_default();
+            let analysis = if faces {
+                *state.faces_label.lock() = scope_label(&sc);
+                match state.faces.load_models(&state.models_dir) {
+                    Ok(()) => state.faces.analyze(reqs),
+                    Err(_) => (0, 0),
+                }
+            } else {
+                *state.similar_label.lock() = scope_label(&sc);
+                state.analysis.analyze(reqs)
+            };
+            let _ = handle.emit("cloud-done", CloudDone { progress, faces, analysis });
+        });
+        Ok(state.cloud.start(todo.into_iter().map(|r| (r.path, r.size)).collect(), then))
+    })
+    .await
+    .map_err(err)?
+}
+
+/// 남은 사진은 내려받지 않는다 (받은 만큼은 분석한다)
+#[tauri::command]
+fn cloud_stop(state: State<'_, AppState>) {
+    state.cloud.stop();
+}
+
+/// iSee가 내려받은 사진의 다운로드를 모두 제거한다: 이 컴퓨터에 받은 내용만 비우고 클라우드에만 둔다.
+/// 클라우드의 사진은 지우지 않고, 분석 결과도 남는다.
+#[tauri::command]
+async fn cloud_evict(app: AppHandle) -> CmdResult<cloud::Evicted> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().cloud.evict_all().map_err(err))
+        .await
+        .map_err(err)?
 }
 
 // ───────────────────────── 날짜·장소별 정리 (5단계) ─────────────────────────
@@ -1410,6 +1529,9 @@ struct BgStatus {
     faces_label: String,
     /// 얼굴 분석 (끝난 수, 전체)
     faces: (usize, usize),
+    /// 클라우드 사진 내려받기와 그 범위 이름
+    cloud: cloud::Progress,
+    cloud_label: String,
 }
 
 fn bg_status(state: &AppState) -> BgStatus {
@@ -1422,11 +1544,13 @@ fn bg_status(state: &AppState) -> BgStatus {
         similar_label: state.similar_label.lock().clone(),
         faces_label: state.faces_label.lock().clone(),
         faces: state.faces.progress(),
+        cloud: state.cloud.progress(),
+        cloud_label: state.cloud_label.lock().clone(),
     }
 }
 
 /// 백그라운드 작업 조절: pause / resume (모두), prefill_on / prefill_off (썸네일 미리 만들기),
-/// stop_similar / stop_faces (지금 하는 분석 중단)
+/// stop_similar / stop_faces (지금 하는 분석 중단), stop_cloud (클라우드 사진 내려받기 중단)
 #[tauri::command]
 fn bg_control(state: State<'_, AppState>, action: String) -> CmdResult<BgStatus> {
     match action.as_str() {
@@ -1434,6 +1558,7 @@ fn bg_control(state: State<'_, AppState>, action: String) -> CmdResult<BgStatus>
             let p = action == "pause";
             state.user_paused.store(p, Ordering::Relaxed);
             state.thumbs.set_paused(p);
+            state.cloud.set_paused(p);
             state.analysis_paused.store(p || state.viewer_active.load(Ordering::Relaxed), Ordering::Relaxed);
         }
         "prefill_on" | "prefill_off" => {
@@ -1448,6 +1573,9 @@ fn bg_control(state: State<'_, AppState>, action: String) -> CmdResult<BgStatus>
         }
         "stop_faces" => {
             state.faces.analyze(Vec::new());
+        }
+        "stop_cloud" => {
+            state.cloud.stop();
         }
         _ => return Err(format!("알 수 없는 동작: {action}")),
     }
@@ -1605,6 +1733,14 @@ pub fn run() {
                     let _ = handle.emit("analysis-progress", (done, total));
                 }));
             }
+            // 클라우드 사진 내려받기: 사용자가 고른 때만, 2장씩 (클라우드 앱과 인터넷에 무리가 가지 않게)
+            let cloud = cloud::Fetcher::new(cloud::Fetched::open(Some(&data_dir.join("downloads.db")))?, 2);
+            {
+                let handle = handle.clone();
+                cloud.set_progress(Arc::new(move |p| {
+                    let _ = handle.emit("cloud-progress", p);
+                }));
+            }
             // 얼굴 썸네일을 만들 때 사진 읽기는 2개씩만 (메모리를 일정하게)
             let face_crops = people::CropService::new(faces.db().clone(), 2);
             let (menu, checks) = menu::build(handle, &settings)?;
@@ -1625,6 +1761,8 @@ pub fn run() {
                 user_paused: AtomicBool::new(false),
                 similar_label: Mutex::new(String::new()),
                 faces_label: Mutex::new(String::new()),
+                cloud,
+                cloud_label: Mutex::new(String::new()),
                 organize_items: Mutex::new(Vec::new()),
                 faces,
                 models_dir: data_dir.join("models"),
@@ -1683,6 +1821,10 @@ pub fn run() {
             analyze_folder,
             stop_analysis,
             similar_report,
+            cloud_estimate,
+            cloud_fetch,
+            cloud_stop,
+            cloud_evict,
             organize_scan,
             organize_plan,
             organize_apply,

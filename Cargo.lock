@@ -2301,6 +2301,7 @@ dependencies = [
  "image",
  "jpeg-encoder",
  "kamadak-exif",
+ "libc",
  "lru",
  "natord",
  "objc2",
