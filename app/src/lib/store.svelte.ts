@@ -487,12 +487,18 @@ class Store {
     this.entries.forEach((_, i) => this.selected.add(i));
   }
 
-  showToast(message: string, opts: { error?: boolean; undo?: boolean } = {}) {
+  /** sticky: 저절로 사라지지 않음 (끝날 때 다른 알림으로 바꾸거나 hideToast) */
+  showToast(message: string, opts: { error?: boolean; undo?: boolean; sticky?: boolean } = {}) {
     clearTimeout(this.toastTimer);
-    this.toast = { id: Date.now(), message, ...opts };
+    this.toast = { id: Date.now(), message, error: opts.error, undo: opts.undo };
     // 오류와 되돌리기 안내는 오래 보여 준다
-    this.toastTimer = window.setTimeout(() => (this.toast = null), opts.undo || opts.error ? 7000 : 3500);
+    if (!opts.sticky) this.toastTimer = window.setTimeout(() => (this.toast = null), opts.undo || opts.error ? 7000 : 3500);
     if (opts.error) api.perfLog(`오류: ${message}`, 0);
+  }
+
+  hideToast() {
+    clearTimeout(this.toastTimer);
+    this.toast = null;
   }
 
   private report(r: { ok: string[]; failed: { path: string; error: string }[] }, verb: string) {

@@ -442,6 +442,7 @@ export const api = {
   facesCropsCancel: () => invoke("faces_crops_cancel"),
   facesRedoTurn: (sc: Scope) => invoke<number>("faces_redo_turn", { folder: sc.path, recursive: sc.recursive, extra: sc.extra }),
   openHomepage: () => invoke("open_homepage"),
+  openDownloadPage: () => invoke("open_download_page"),
   /** 오류 신고 페이지 (place: 지금 화면 이름) */
   openBugReport: (place: string) => invoke("open_bug_report", { place }),
   appInfo: () => invoke<AppInfo>("app_info"),

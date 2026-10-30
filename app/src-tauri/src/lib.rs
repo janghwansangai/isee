@@ -1363,6 +1363,8 @@ fn prune_undo_dir(dir: &Path) {
 
 /// 만든 사람 홈페이지 (메뉴 "홈페이지", 정보 창)
 pub const HOMEPAGE: &str = "https://hwansang.kr";
+/// 소개·내려받기 사이트 (업데이트 확인이 안 될 때 직접 내려받는 곳)
+const DOWNLOAD_PAGE: &str = "https://isee-app.janhan97.workers.dev";
 /// 프로그램 오류 기록 (앱 데이터 폴더)
 const ERROR_LOG: &str = "errors.log";
 
@@ -1384,6 +1386,12 @@ fn open_url(url: &str) -> CmdResult<()> {
 #[tauri::command]
 fn open_homepage() -> CmdResult<()> {
     open_url(HOMEPAGE)
+}
+
+/// 내려받기 사이트를 기본 브라우저로 연다 (업데이트 확인이 실패했을 때)
+#[tauri::command]
+fn open_download_page() -> CmdResult<()> {
+    open_url(DOWNLOAD_PAGE)
 }
 
 /// 오류 신고 주소: 프로그램 ID, 버전, 지금 화면 이름(40자까지)을 붙인다
@@ -1836,6 +1844,7 @@ pub fn run() {
             faces_crops_cancel,
             faces_redo_turn,
             open_homepage,
+            open_download_page,
             open_bug_report,
             app_info,
             faces_report,
