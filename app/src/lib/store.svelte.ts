@@ -1,6 +1,7 @@
 import { SvelteSet } from "svelte/reactivity";
 import { ask, message, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
+import { MAX_PRINT_PHOTOS } from "./print";
 import {
   api,
   baseName,
@@ -629,6 +630,11 @@ class Store {
     const list = paths.map((p) => byPath.get(p)).filter((e): e is Entry => !!e && e.kind === "image");
     if (!list.length) {
       this.showToast("인쇄할 사진을 골라 주세요");
+      return;
+    }
+    // 메모리가 모자라 꺼지지 않게 한 번에 인쇄할 사진 수를 제한한다
+    if (list.length > MAX_PRINT_PHOTOS) {
+      this.showToast(`한 번에 ${MAX_PRINT_PHOTOS}장까지 인쇄할 수 있습니다 (고른 사진 ${list.length.toLocaleString()}장). 나눠서 인쇄해 주세요.`, { error: true });
       return;
     }
     this.print = list;

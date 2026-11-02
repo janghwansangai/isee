@@ -108,6 +108,12 @@ export interface Page {
   tile?: string;
 }
 
+/** 한 번에 인쇄할 수 있는 사진 수와 쪽 수. 쪽마다 300dpi 이미지를 메모리에 두므로 넘으면 메모리가 모자라 꺼질 수 있다 */
+export const MAX_PRINT_PHOTOS = 200;
+export const MAX_PRINT_PAGES = 100;
+/** 사진 한 장을 읽는 최대 크기 (긴 변 px). 아주 큰 사진을 원본 그대로 펼치지 않게 */
+const MAX_SOURCE_PX = 8000;
+
 /** 칸 아래 파일 이름 줄 높이, 쪽 아래 글자 줄 높이 (mm) */
 const LABEL_H = 4.5;
 const FOOT_H = 6;
@@ -454,6 +460,7 @@ export function printDpi(page: Page): number {
 /** 쪽들을 인쇄 해상도로 그려 문서에 넣고 인쇄 창을 연다. progress(끝난 쪽, 전체) */
 export async function printPages(pages: Page[], photos: PrintPhoto[], progress: (done: number, total: number) => void) {
   if (!pages.length) return;
+  if (pages.length > MAX_PRINT_PAGES) throw new Error(`한 번에 ${MAX_PRINT_PAGES}쪽까지 인쇄할 수 있습니다`);
   const { w, h } = pages[0];
   const urls: string[] = [];
   const cache = new Map<number, ImageBitmap>();
@@ -467,6 +474,10 @@ export async function printPages(pages: Page[], photos: PrintPhoto[], progress: 
       const o = need.get(c.photo) ?? [0, 0];
       need.set(c.photo, [Math.max(o[0], nw), Math.max(o[1], nh)]);
     }
+  for (const [n, [nw, nh]] of need) {
+    const s = Math.min(1, MAX_SOURCE_PX / Math.max(nw, nh));
+    need.set(n, [Math.ceil(nw * s), Math.ceil(nh * s)]);
+  }
   const lastUse = new Map<number, number>();
   pages.forEach((pg, i) => pg.cells.forEach((c) => lastUse.set(c.photo, i)));
   const canvas = document.createElement("canvas");

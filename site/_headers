@@ -1,0 +1,6 @@
+# 소개 사이트 보안 헤더 (Cloudflare가 읽고, 파일 자체는 공개되지 않는다)
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()

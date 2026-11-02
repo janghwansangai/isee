@@ -5,6 +5,7 @@
   import { store } from "../lib/store.svelte";
   import { thumbUrl, type Entry } from "../lib/api";
   import {
+    MAX_PRINT_PAGES,
     PAPERS,
     drawPage,
     layout,
@@ -112,6 +113,8 @@
   const paper = $derived(PAPERS[opts.paper]);
   let sheets = $derived(pages.length);
   let many = $derived(opts.mode === "multi" && photos.length > 30);
+  /** 쪽이 너무 많으면 인쇄하지 않는다 (메모리) */
+  let tooMany = $derived(sheets > MAX_PRINT_PAGES);
 </script>
 
 <div class="print" role="dialog" aria-label="인쇄" tabindex="-1" oncontextmenu={(e) => e.preventDefault()}>
@@ -207,11 +210,12 @@
         <span class="dim small">
           {#if loading}사진을 읽는 중…{:else}용지 {sheets.toLocaleString()}장{/if}
         </span>
-        <button class="btn primary" disabled={loading || printing || !sheets} onclick={print}>
+        <button class="btn primary" disabled={loading || printing || !sheets || tooMany} onclick={print}>
           {printing ? "준비 중…" : "인쇄…"}
         </button>
       </div>
       {#if many}<p class="note warn">사진이 많아 한 장에 모으면 아주 작게 나옵니다.</p>{/if}
+      {#if tooMany}<p class="note warn">한 번에 {MAX_PRINT_PAGES}쪽까지 인쇄할 수 있습니다. 사진을 나눠서 인쇄하거나 나누는 장 수를 줄여 주세요.</p>{/if}
     </div>
 
     <div class="preview" bind:clientWidth={boxW} bind:clientHeight={boxH}>

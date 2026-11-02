@@ -232,6 +232,11 @@ pub fn rename(path: &Path, new_name: &str) -> anyhow::Result<Moved> {
 }
 
 pub fn create_dir(parent: &Path, name: &str) -> anyhow::Result<String> {
+    // "../x", "a/b" 같은 이름으로 다른 폴더에 만들지 않게 한다 (이름 바꾸기와 같은 규칙)
+    let name = name.trim();
+    if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
+        bail!("쓸 수 없는 이름");
+    }
     let p = unique_in(parent, name);
     std::fs::create_dir(&p)?;
     Ok(p.to_string_lossy().into_owned())
@@ -282,6 +287,20 @@ mod tests {
         }
         restore(&[t]).unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"data");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn new_folder_stays_in_its_parent() {
+        let d = tmp("mkdir");
+        let inner = d.join("in");
+        std::fs::create_dir_all(&inner).unwrap();
+        for bad in ["../밖", "a/b", "..", " ", "a\\b"] {
+            assert!(create_dir(&inner, bad).is_err(), "{bad}");
+        }
+        assert!(!d.join("밖").exists());
+        let made = create_dir(&inner, " 새 폴더 ").unwrap();
+        assert_eq!(made, inner.join("새 폴더").to_string_lossy());
         std::fs::remove_dir_all(&d).unwrap();
     }
 }
