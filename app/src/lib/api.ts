@@ -443,6 +443,8 @@ export const api = {
   facesRedoTurn: (sc: Scope) => invoke<number>("faces_redo_turn", { folder: sc.path, recursive: sc.recursive, extra: sc.extra }),
   openHomepage: () => invoke("open_homepage"),
   openDownloadPage: () => invoke("open_download_page"),
+  /** 문서에 넣어 둔 인쇄할 쪽으로 운영체제 인쇄 창을 연다 (한 쪽 크기, mm) */
+  printPages: (widthMm: number, heightMm: number) => invoke("print_pages", { widthMm, heightMm }),
   /** 오류 신고 페이지 (place: 지금 화면 이름) */
   openBugReport: (place: string) => invoke("open_bug_report", { place }),
   appInfo: () => invoke<AppInfo>("app_info"),

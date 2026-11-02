@@ -99,13 +99,14 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
     let reveal = MenuItem::with_id(app, "reveal", REVEAL_LABEL, true, None::<&str>)?;
     let rename = MenuItem::with_id(app, "rename", "이름 바꾸기", true, None::<&str>)?;
     let trash = MenuItem::with_id(app, "trash", "휴지통으로 이동", true, None::<&str>)?;
+    let print = MenuItem::with_id(app, "print", "인쇄…", true, mac_accel("CmdOrCtrl+P"))?;
     let (sep1, sep2) = (sep()?, sep()?);
     let close = PredefinedMenuItem::close_window(app, Some("창 닫기"))?;
     let file = Submenu::with_items(
         app,
         "파일",
         true,
-        &[&open_folder, &add_folders, &new_folder, &sep1, &reveal, &rename, &trash, &sep2, &close],
+        &[&open_folder, &add_folders, &new_folder, &sep1, &reveal, &rename, &trash, &sep2, &print, &sep()?, &close],
     )?;
     let edit = Submenu::with_items(
         app,
@@ -381,6 +382,7 @@ pub fn context_menu(app: &AppHandle, s: &Settings, images: usize, total: usize) 
             &quality,
             &item("ctx:share", &format!("공유용으로 저장{many}  (2048px · JPG · 위치 정보 삭제)"), img)?,
             &item("ctx:watermark", "워터마크 넣기…", img)?,
+            &item("ctx:print", &format!("인쇄…{many}"), img)?,
             &item("ctx:batch_rename", "이름 일괄 변경…", total > 1)?,
             &save,
             &sep()?,

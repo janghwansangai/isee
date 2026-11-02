@@ -121,3 +121,29 @@ input[type="text"] {
 .btn.primary:hover {
   filter: brightness(1.08);
 }
+
+/* 인쇄: 인쇄할 쪽 이미지만 (화면에는 보이지 않음). 쪽 크기는 인쇄할 때 넣는 @page가 정한다 */
+.print-root {
+  display: none;
+}
+@media print {
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  body > *:not(.print-root) {
+    display: none !important;
+  }
+  .print-root {
+    display: block;
+  }
+  .print-page {
+    display: block;
+    break-after: page;
+  }
+  .print-page:last-child {
+    break-after: auto;
+  }
+}

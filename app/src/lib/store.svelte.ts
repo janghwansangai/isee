@@ -109,6 +109,8 @@ class Store {
   video = $state<Entry | null>(null);
   /** 편집기에 연 사진 */
   editor = $state<{ path: string; entry: Entry } | null>(null);
+  /** 인쇄 화면: 인쇄할 사진 */
+  print = $state<Entry[] | null>(null);
   /** 날짜·장소별 정리 화면: 고른 항목 (비어 있으면 폴더 전체) */
   organize = $state<{ folder: string; paths: string[] } | null>(null);
   /** 변환 진행 상황 (끝난 수 / 전체) */
@@ -619,6 +621,17 @@ class Store {
     this.compareKeep = opts.keep ?? [];
     this.compareExtra = Object.fromEntries((opts.entries ?? []).map((e) => [e.path, e]));
     this.compare = paths.slice(0, 9);
+  }
+
+  /** 인쇄: 뷰어에 연 사진, 아니면 고른 사진 */
+  openPrint(paths = this.imageTargets()) {
+    const byPath = new Map(this.entries.map((e) => [e.path, e]));
+    const list = paths.map((p) => byPath.get(p)).filter((e): e is Entry => !!e && e.kind === "image");
+    if (!list.length) {
+      this.showToast("인쇄할 사진을 골라 주세요");
+      return;
+    }
+    this.print = list;
   }
 
   /** 인물 화면 (지금 폴더) */

@@ -1,5 +1,6 @@
 mod cli;
 mod menu;
+mod print;
 mod protocol;
 mod settings;
 mod shell;
@@ -1845,6 +1846,7 @@ pub fn run() {
             faces_redo_turn,
             open_homepage,
             open_download_page,
+            print::print_pages,
             open_bug_report,
             app_info,
             faces_report,

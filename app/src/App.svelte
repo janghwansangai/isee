@@ -30,6 +30,7 @@
   import SimilarView from "./components/SimilarView.svelte";
   import ScopePanel from "./components/ScopePanel.svelte";
   import OrganizeView from "./components/OrganizeView.svelte";
+  import PrintView from "./components/PrintView.svelte";
   import EditorView from "./components/EditorView.svelte";
   import VideoPlayer from "./components/VideoPlayer.svelte";
   import PeopleView from "./components/PeopleView.svelte";
@@ -135,6 +136,7 @@
   function screenName(): string {
     if (helpOpen) return "사용 설명서";
     if (aboutOpen) return "iSee 정보";
+    if (store.print) return "인쇄";
     if (store.editor) return "편집";
     if (store.video) return "동영상";
     if (store.compare) return "비교";
@@ -157,6 +159,8 @@
       return;
     }
     if (store.video) return;
+    // 인쇄 화면이 덮고 있으면 뒤의 사진 목록을 바꾸는 메뉴는 받지 않는다
+    if (store.print && !OVERLAY_MENU_OK.has(id)) return;
     if ((store.compare || store.similar || store.organize || (store.people && store.viewer < 0)) && !OVERLAY_MENU_OK.has(id)) return;
     if (id.startsWith("ctx:")) return onCtx(id);
     switch (id) {
@@ -213,6 +217,8 @@
         return store.openEditor();
       case "people":
         return store.openPeople();
+      case "print":
+        return store.openPrint();
       case "bg_panel":
         bgOpen = true;
         return;
@@ -253,7 +259,7 @@
   }
 
   // 맥에서는 이 단축키들을 메뉴가 처리하므로 화면에서 또 처리하지 않는다
-  const MAC_MENU_KEYS = new Set(["z", "a", "o", "n", "[", "]", "ArrowUp", "=", "-"]);
+  const MAC_MENU_KEYS = new Set(["z", "a", "o", "n", "p", "[", "]", "ArrowUp", "=", "-"]);
 
   function onKey(e: KeyboardEvent) {
     if (helpOpen) {
@@ -268,6 +274,14 @@
     if (e.key === "F1" && !isMac) {
       e.preventDefault();
       helpOpen = true;
+      return;
+    }
+    // 인쇄 화면: Esc로 닫는다 (나머지 키는 화면 안의 설정이 받는다)
+    if (store.print) {
+      if (e.key === "Escape" && !store.progress) {
+        e.preventDefault();
+        store.print = null;
+      }
       return;
     }
     if (aboutOpen) {
@@ -316,6 +330,7 @@
         z: () => store.undo(),
         a: () => store.viewer < 0 && store.selectAll(),
         o: () => pickAndOpen(),
+        p: () => store.openPrint(),
         "=": () => changeThumbs(16),
         "-": () => changeThumbs(-16),
       };
@@ -561,6 +576,8 @@
       case "watermark":
         store.dialog = { type: "watermark", paths: store.imageTargets() };
         return;
+      case "print":
+        return store.openPrint();
       case "batch_rename":
         store.dialog = { type: "batchRename", paths: store.targets() };
         return;
@@ -716,6 +733,10 @@
 
 {#if store.organize}
   <OrganizeView bind:this={organizeView} />
+{/if}
+
+{#if store.print}
+  <PrintView entries={store.print} onclose={() => (store.print = null)} />
 {/if}
 
 {#if store.people}

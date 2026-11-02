@@ -25,5 +25,11 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 ureq = "2"
 
+[target."cfg(target_os = \"macos\")".dependencies]
+# 사진 인쇄: WKWebView 인쇄 창을 용지 크기·여백 0으로 연다. 웹뷰(wry)가 이미 쓰는 것이라 새로 늘지 않는다.
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-web-kit = "0.3.2"
+
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"
