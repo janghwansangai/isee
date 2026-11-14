@@ -1,5 +1,5 @@
 # HANDOFF — iSee
-> 기준: 2026-11-02 · v0.1.11 공개 직후 (커밋은 git log 맨 위) · 상태: 작업 중
+> 기준: 2026-11-14 · v0.1.12 공개 직후 (커밋은 git log 맨 위) · 상태: 작업 중
 > 다음 AI에게: 이 파일만 읽고 '다음 할 일' 1번부터 시작. 파일은 '수정 지도'에 있는 것부터 필요할 때만 연다.
 
 ## 한 줄 요약
@@ -12,7 +12,7 @@
 - 소개 사이트: `site/` → 저장소 루트에서 `npx -y wrangler@4.155.0 deploy` → https://isee-app.janhan97.workers.dev
 
 ## 현재 상태
-- ✅ 완료: v0.1.11 공개(2026-11-02: 보안 점검 반영 — zip 9.2.2, 액션 커밋 고정, site/_headers, 인쇄 한도, 새 폴더 이름 검사). 그 전: 사진 인쇄(0.1.10), 업데이트 확인 안내(0.1.9), 클라우드 사진 내려받아 분석·다운로드 제거(0.1.8), 오류 신고(0.1.7). 사이트 기본 버전 0.1.11.
+- ✅ 완료: v0.1.12 공개(2026-11-14: 얼굴 인식률 개선 — 눈·코·입 위치 다시 잡기·원본 크기 지문·같은 사진 두 얼굴 묶기 금지, 측정은 BENCH 9-2와 `isee-bench face-lab`). 그 전: v0.1.11(2026-11-02: 보안 점검 반영 — zip 9.2.2, 액션 커밋 고정, site/_headers, 인쇄 한도, 새 폴더 이름 검사). 그 전: 사진 인쇄(0.1.10), 업데이트 확인 안내(0.1.9), 클라우드 사진 내려받아 분석·다운로드 제거(0.1.8), 오류 신고(0.1.7). 사이트 기본 버전 0.1.12.
 - ❌ 막힘: 사용자 윈도우 PC에서 "업데이트 확인"이 한참 뒤 실패(맥은 0.13초). 학교망 GitHub 차단·프록시 의심, 실패 창의 "자세한 내용" 문구를 아직 못 받음.
 
 ## 다음 할 일 (우선순위순)
@@ -30,6 +30,8 @@
 - 결정·측정 기록 → `docs/PLAN.md`(상태 머리말을 버전마다 갱신), `docs/BENCH.md`
 
 ## 주의사항 (코드만 봐서는 모르는 것)
+- 얼굴 모델을 바꾸려면: InsightFace 모델이 가장 정확했지만(87%) 비상업 연구용 라이선스라 쓰지 않음. AuraFace(Apache-2.0)는 이득 없음 (BENCH 9-2).
+- 이 맥(macOS 27)에서 `decode::imageio::tests::broken_files_do_not_crash`가 SIGTRAP으로 꺼짐 (0.1.12 변경과 무관, 원인 미확인).
 - 사진 보기 속도를 늦추는 기능은 사용자 허락을 먼저 받는다.
 - 앱 화면 확인: 사용자의 iSee가 켜져 있으면 같은 식별자 앱은 바로 꺼진다(single-instance). `cd app && npx tauri build --debug --no-bundle --config '{"identifier":"com.isee.viewer.cloudtest","productName":"iSeeTest"}'` → target/debug/isee-app을 임시 iSeeTest.app(Info.plist에 같은 식별자, `codesign -s -`)에 넣고 `HOME=<가짜 홈>`으로 실행 → computer-use(배경 조작)로 확인. 드롭다운은 배경에서 못 바꿈.
 - 맥 WKWebView 인쇄는 반드시 `runOperationModalForWindow`(비동기). 동기 `runOperation`은 쪽이 끝없이 생겨 PDF가 1분에 1.3GB가 됐다. 개발 빌드는 `ISEE_PRINT_PDF=<경로>`면 인쇄 창 없이 PDF 저장 — 크기 감시와 함께 쓸 것.
