@@ -183,6 +183,49 @@ impl Models {
         Ok(found)
     }
 
+    /// 얼굴 하나를 얼굴 크기의 3배로 잘라 다시 찾아서 눈·코·입 5점을 정밀하게 잡는다 (px의 픽셀 자리).
+    /// 단체 사진의 작은 얼굴은 처음 찾을 때 17px쯤으로 줄어든 그림에서 위치를 잡아 오차가 크고,
+    /// 그 오차 때문에 지문이 흐려진다. 다시 잡으면 같은 사람을 맞히는 비율이 65% → 76%로 오른다
+    /// (isee-bench face-lab, 사용자 사진의 이름 붙은 얼굴. 3배가 가장 좋고 6배 이상은 효과가 없다).
+    /// 못 찾으면 None (처음 찾은 위치를 그대로 쓴다).
+    pub fn refine(&self, px: &Pixels, face: &Face) -> Option<[[f32; 2]; 5]> {
+        const ZOOM: f32 = 3.0;
+        let (w, h) = (px.width as i64, px.height as i64);
+        let (bw, bh) = (face.rect[2] * w as f32, face.rect[3] * h as f32);
+        let side = bw.max(bh) * ZOOM;
+        let (cx, cy) = (face.rect[0] * w as f32 + bw / 2.0, face.rect[1] * h as f32 + bh / 2.0);
+        let (x0, y0) = ((cx - side / 2.0).round() as i64, (cy - side / 2.0).round() as i64);
+        let n = (side.round() as i64).clamp(8, 4096);
+        let mut rgba = vec![0u8; (n * n * 4) as usize];
+        for y in 0..n {
+            let sy = y0 + y;
+            if sy < 0 || sy >= h {
+                continue;
+            }
+            // 사진 안에 있는 부분만 한 줄씩 옮긴다
+            let (xa, xb) = ((-x0).max(0), (w - x0).min(n));
+            if xa >= xb {
+                continue;
+            }
+            let (s, d) = (((sy * w + x0 + xa) * 4) as usize, ((y * n + xa) * 4) as usize);
+            let len = ((xb - xa) * 4) as usize;
+            rgba[d..d + len].copy_from_slice(&px.rgba[s..s + len]);
+        }
+        let crop = Pixels { rgba, width: n as u32, height: n as u32 };
+        let found = self.detect_region(&crop, [0.0, 0.0, n as f32, n as f32], DET_SIZE).ok()?;
+        // 자른 그림 가운데에 있고 크기가 비슷한 얼굴 가운데 점수가 가장 높은 것
+        let want = 1.0 / ZOOM;
+        let f = found
+            .iter()
+            .filter(|f| {
+                let s = f.rect[2].max(f.rect[3]);
+                let off = ((f.rect[0] + f.rect[2] / 2.0 - 0.5).powi(2) + (f.rect[1] + f.rect[3] / 2.0 - 0.5).powi(2)).sqrt();
+                s > want * 0.6 && s < want * 1.6 && off < want * 0.5
+            })
+            .max_by(|a, b| a.score.total_cmp(&b.score))?;
+        Some(f.marks.map(|[x, y]| [x + x0 as f32, y + y0 as f32]))
+    }
+
     /// 얼굴 지문 (128개, 길이 1로 맞춤)과 품질 (정규화 전 길이: 흐리거나 가려진 얼굴일수록 작다).
     /// 정렬한 얼굴과 좌우로 뒤집은 얼굴의 지문을 더해 쓴다 (안정성이 올라간다).
     pub fn fingerprint(&self, px: &Pixels, face: &Face) -> anyhow::Result<(Vec<f32>, f32)> {

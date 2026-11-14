@@ -9,6 +9,9 @@
 //!   isee-bench face-levels <faces.db 복사본>  정확도 단계별로 묶어 보고, 사용자가 붙인 이름과 비교 (복사본을 고침)
 //!   isee-bench face-turns <모델 폴더> <사진 폴더> <결과 폴더>  얼굴이 돌아간 정도별 얼굴 모음 (기준값 확인용)
 //!   isee-bench face-fill-turns <모델 폴더> <faces.db 복사본>  예전에 분석한 얼굴에 돌아간 정도를 채운다 (내려받은 사진만)
+//!   isee-bench face-lab …               얼굴 인식 연구용 측정: 후보 모델·묶는 방법 비교 (facelab.rs 맨 위 설명)
+
+mod facelab;
 
 use isee_core::cache::ThumbCache;
 use isee_core::decode::{self, generic};
@@ -87,6 +90,7 @@ fn main() -> anyhow::Result<()> {
             args.get(2).and_then(|v| v.parse().ok()).unwrap_or(10_000),
             args.get(3).and_then(|v| v.parse().ok()).unwrap_or(150),
         ),
+        Some("face-lab") => facelab::main(&args[2..]),
         Some("face-levels") => face_levels(Path::new(args.get(2).expect("faces.db 복사본"))),
         Some("face-turns") => face_turns(
             Path::new(args.get(2).expect("모델 폴더")),

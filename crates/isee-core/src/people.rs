@@ -3,7 +3,7 @@
 //! 사용자가 이름을 붙이거나 고친 얼굴은 다음 분류의 기준이 된다 (쓸수록 정확해진다).
 
 use crate::cache::key_of;
-use crate::decode;
+use crate::decode::{self, Pixels};
 use crate::faces::{Face, Models, similarity_of, turn_of};
 use crate::listing::nfc;
 use crate::thumbs::Req;
@@ -21,8 +21,12 @@ use std::time::Duration;
 const SIZE: u32 = 3072;
 /// 이보다 작은 얼굴(분석 크기 기준 픽셀)은 지문이 불안정해서 묶지 않는다
 pub const MIN_FACE_PX: f32 = 36.0;
+/// 지문을 뜰 때 읽는 사진 크기 (긴 변). 얼굴 찾기는 SIZE로 줄인 그림에서 하고, 지문은 원본에 가까운 그림에서 뜬다
+/// (4000px 사진이면 얼굴이 1.3배 크게 들어간다). 메모리 때문에 이보다 큰 사진은 줄인다 (작업 하나에 약 50MB).
+const FULL: u32 = 4096;
 /// 분석 방식이 바뀌면 올린다 (다시 분석하되 사용자가 붙인 이름은 이어받는다)
-const VERSION: u32 = 2;
+/// 3: 눈·코·입 위치를 얼굴마다 다시 잡고(faces::Models::refine) 원본 크기에서 지문을 뜬다
+const VERSION: u32 = 3;
 
 /// 같은 사람으로 묶는 엄격함 (인물 화면의 "정확도"). 엄격할수록 다른 사람이 섞이는 일이 줄고,
 /// 대신 같은 사람이 여러 묶음으로 나뉘거나 미분류로 남는 얼굴이 늘어난다. 묶을 때만 쓰므로 바꿔도 다시 분석하지 않는다.
@@ -743,6 +747,10 @@ fn average_linkage_with(
     }
     // 쌍에 들어 있는 얼굴이 어느 작은 묶음에 들어갔는지
     let mut seed_of: HashMap<i64, usize> = HashMap::new();
+    // 같은 사진의 두 얼굴은 다른 사람이다: 사진마다 그 사진의 얼굴이 들어간 작은 묶음들.
+    // 그런 묶음에는 넣지 않고, 합치지도 않는다 (사용자 사진에서 같은 사진 두 얼굴이 한 묶음에 든 154쌍 → 0,
+    // 참고 모델이 다른 사람이라고 본 쌍의 비율 3.6% → 2.4%. isee-bench face-lab)
+    let mut seeds_of_photo: HashMap<String, Vec<usize>> = HashMap::new();
     // 작은 묶음의 중심 지문(정규화한 합)은 한 줄로 이어 두고 훑는다. 합은 얼굴이 들어올 때마다 더해 둔다.
     let mut cents: Vec<f32> = Vec::new();
     let mut seeds: Vec<(Vec<f32>, Vec<FaceRow>)> = Vec::new();
@@ -754,7 +762,11 @@ fn average_linkage_with(
             continue;
         }
         let id = f.id;
-        let banned: Vec<usize> = partners.get(&id).map_or(Vec::new(), |ps| ps.iter().filter_map(|p| seed_of.get(p).copied()).collect());
+        let photo = f.path.clone();
+        let mut banned: Vec<usize> = partners.get(&id).map_or(Vec::new(), |ps| ps.iter().filter_map(|p| seed_of.get(p).copied()).collect());
+        if let Some(v) = seeds_of_photo.get(&photo) {
+            banned.extend_from_slice(v);
+        }
         let at = match nearest(&cents, dim, &f.emb, &banned) {
             Some((s, i)) if s >= lim.seed => {
                 let (sum, m) = &mut seeds[i];
@@ -783,6 +795,7 @@ fn average_linkage_with(
         if partners.contains_key(&id) {
             seed_of.insert(id, at);
         }
+        seeds_of_photo.entry(photo).or_default().push(at);
     }
     drop(cents);
     if seeds.len() > max_merge {
@@ -803,6 +816,9 @@ fn average_linkage_with(
         }
         seeds = kept;
         seed_of = seed_of.into_iter().filter_map(|(id, i)| remap.get(&i).map(|&j| (id, j))).collect();
+        for v in seeds_of_photo.values_mut() {
+            *v = v.iter().filter_map(|i| remap.get(i).copied()).collect();
+        }
     }
     // 묶음마다 지문 합과 얼굴
     let (mut sums, members): (Vec<Vec<f32>>, Vec<Vec<FaceRow>>) = seeds.into_iter().unzip();
@@ -826,6 +842,15 @@ fn average_linkage_with(
             {
                 sim[ca * n + cb] = f32::NEG_INFINITY;
                 sim[cb * n + ca] = f32::NEG_INFINITY;
+            }
+        }
+    }
+    for v in seeds_of_photo.values() {
+        for &a in v {
+            for &b in v {
+                if a != b {
+                    sim[a * n + b] = f32::NEG_INFINITY;
+                }
             }
         }
     }
@@ -1119,15 +1144,31 @@ impl FaceService {
 /// 사진 한 장: 크게 읽어서 얼굴 찾기(작은 얼굴은 확대한 조각으로) → 얼굴마다 지문 (원본에 가까운 해상도에서)
 pub fn analyze_one(models: &Models, path: &Path) -> anyhow::Result<Vec<Analyzed>> {
     anyhow::ensure!(!crate::listing::is_online_only(path), "온라인 전용 파일");
-    let px = decode::screen_rgba(path, SIZE)?;
-    let faces = models.detect(&px)?;
+    // 원본에 가까운 크기로 한 번 읽고, 얼굴 찾기용으로만 SIZE로 줄인다 (얼굴 크기 px도 SIZE 기준 그대로)
+    let big = decode::screen_rgba(path, FULL)?;
+    let small;
+    let px = if big.width.max(big.height) > SIZE {
+        small = decode::generic::resize_pixels(Pixels { rgba: big.rgba.clone(), width: big.width, height: big.height }, SIZE)?;
+        &small
+    } else {
+        &big
+    };
+    let up = big.width as f32 / px.width as f32;
+    let faces = models.detect(px)?;
     let mut out = Vec::with_capacity(faces.len());
-    for f in faces {
+    for mut f in faces {
         let side = (f.rect[2] * px.width as f32).min(f.rect[3] * px.height as f32);
+        // 지문·방향은 큰 그림의 자리에서: 눈·코·입 위치를 큰 그림으로 옮기고, 얼굴을 확대해 다시 잡는다
+        f.marks = f.marks.map(|[x, y]| [x * up, y * up]);
+        if side >= MIN_FACE_PX
+            && let Some(m) = models.refine(&big, &f)
+        {
+            f.marks = m;
+        }
         // 너무 작은 얼굴은 지문을 만들지 않는다 (위치만 남겨 "작은 얼굴"로 센다)
-        let (emb, quality) = if side >= MIN_FACE_PX { models.fingerprint(&px, &f)? } else { (Vec::new(), 0.0) };
+        let (emb, quality) = if side >= MIN_FACE_PX { models.fingerprint(&big, &f)? } else { (Vec::new(), 0.0) };
         // 이미 읽은 사진에서 바로 잘라 두면 인물 화면이 원본(클라우드)을 다시 읽지 않는다
-        let crop = if side >= MIN_FACE_PX { crop_jpeg(&px, &f.rect) } else { None };
+        let crop = if side >= MIN_FACE_PX { crop_jpeg(px, &f.rect) } else { None };
         let turn = Some(turn_of(&f));
         out.push(Analyzed { face: f, px: side, emb, quality, crop, turn });
     }
@@ -1174,6 +1215,21 @@ fn worker(inner: Arc<Inner>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_faces_in_one_photo_are_never_grouped_together() {
+        // 거의 같은 지문 셋: 둘은 같은 사진(다른 사람이어야 함), 하나는 다른 사진
+        let e = |x: f32| vec![1.0, x, 0.0, 0.0];
+        let faces = vec![face(1, "/a.jpg", e(0.00), 100.0), face(2, "/a.jpg", e(0.02), 90.0), face(3, "/b.jpg", e(0.01), 80.0)];
+        let r = group(faces, &[], &[], 0, 0, &Options::default());
+        for g in &r.groups {
+            let photos: std::collections::HashSet<&str> = g.faces.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(photos.len(), g.faces.len(), "같은 사진의 얼굴이 한 묶음에 들어감");
+        }
+        // 다른 사진의 얼굴은 그대로 묶인다
+        assert_eq!(r.groups.len(), 1);
+        assert_eq!(r.groups[0].faces.len(), 2);
+    }
 
     fn face(id: i64, path: &str, emb: Vec<f32>, px: f32) -> FaceRow {
         FaceRow { id, path: path.into(), rect: [0.0; 4], px, emb: mean(&[emb]), person: None, not_person: None, q: 1.0, turn: None }

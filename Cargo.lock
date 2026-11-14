@@ -2275,6 +2275,7 @@ dependencies = [
  "image",
  "isee-core",
  "kamadak-exif",
+ "rayon",
  "rusqlite",
  "tract-onnx",
 ]

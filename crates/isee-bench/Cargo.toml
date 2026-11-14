@@ -9,6 +9,6 @@ rusqlite = { version = "0.41.0", features = ["bundled"] }
 kamadak-exif = "0.6.1"
 anyhow = "1.0.104"
 isee-core = { version = "0.1.0", path = "../isee-core" }
-
-[dev-dependencies]
+# 얼굴 인식 연구용 측정(face-lab)에서 후보 모델을 직접 돌려 본다. 둘 다 isee-core가 이미 쓰는 것이라 새로 늘지 않는다.
+rayon = "1.12.0"
 tract-onnx = "0.23.9"
