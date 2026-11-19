@@ -39,3 +39,7 @@ libc = "0.2"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 trash = "5.2.9"
+
+[target.'cfg(windows)'.dependencies]
+# 탐색기와 같은 드라이브 이름 (SHGetFileInfoW). 앱(tao·wry)이 이미 쓰는 판이라 새로 늘지 않는다.
+windows = { version = "0.62.2", features = ["Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

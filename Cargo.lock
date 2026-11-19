@@ -2309,6 +2309,7 @@ dependencies = [
  "tract-onnx",
  "trash",
  "webp",
+ "windows",
  "xxhash-rust",
  "zune-jpeg",
 ]

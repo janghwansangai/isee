@@ -408,15 +408,48 @@ fn volumes() -> Vec<Place> {
 
 #[cfg(windows)]
 fn volumes() -> Vec<Place> {
-    (b'A'..=b'Z')
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    // 탐색기 이름(SHGetFileInfo)은 COM이 켜진 스레드에서 물어야 한다. 이미 켜져 있으면(S_FALSE) 짝만 맞춘다.
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let v = (b'A'..=b'Z')
         .map(|c| format!("{}:\\", c as char))
         .filter(|p| Path::new(p).exists())
         .map(|p| Place {
-            name: p.trim_end_matches('\\').to_string(),
+            name: drive_display_name(&p).unwrap_or_else(|| p.trim_end_matches('\\').to_string()),
             path: p,
             icon: "volume",
         })
-        .collect()
+        .collect();
+    if com.is_ok() {
+        unsafe { CoUninitialize() };
+    }
+    v
+}
+
+/// 탐색기에 보이는 드라이브 이름 (예: "로컬 디스크 (C:)", "USB 드라이브 (E:)", "자료 (D:)").
+/// 윈도우 언어·볼륨 이름·네트워크 공유 이름을 탐색기와 똑같이 따른다.
+#[cfg(windows)]
+fn drive_display_name(root: &str) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::UI::Shell::{SHFILEINFOW, SHGFI_DISPLAYNAME, SHGetFileInfoW};
+    use windows::core::PCWSTR;
+    let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut info = SHFILEINFOW::default();
+    let ok = unsafe {
+        SHGetFileInfoW(
+            PCWSTR(wide.as_ptr()),
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&mut info as *mut _),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_DISPLAYNAME,
+        )
+    } != 0;
+    if !ok {
+        return None;
+    }
+    let len = info.szDisplayName.iter().position(|&c| c == 0).unwrap_or(info.szDisplayName.len());
+    let name = String::from_utf16_lossy(&info.szDisplayName[..len]).trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
