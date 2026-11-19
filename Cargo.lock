@@ -2249,6 +2249,7 @@ version = "0.1.12"
 dependencies = [
  "anyhow",
  "isee-core",
+ "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
@@ -2264,6 +2265,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "ureq",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 

@@ -13,6 +13,7 @@
 
 ## 현재 상태
 - ✅ 완료: v0.1.12 공개(2026-11-14: 얼굴 인식률 개선 — 눈·코·입 위치 다시 잡기·원본 크기 지문·같은 사진 두 얼굴 묶기 금지, 측정은 BENCH 9-2와 `isee-bench face-lab`). 그 전: v0.1.11(2026-11-02: 보안 점검 반영 — zip 9.2.2, 액션 커밋 고정, site/_headers, 인쇄 한도, 새 폴더 이름 검사). 그 전: 사진 인쇄(0.1.10), 업데이트 확인 안내(0.1.9), 클라우드 사진 내려받아 분석·다운로드 제거(0.1.8), 오류 신고(0.1.7). 사이트 기본 버전 0.1.12.
+- ✅ 만들었지만 아직 배포 안 함 (2026-11-19): 파일 탐색기처럼 복사·잘라내기·붙여넣기 — ⌘C·⌘X·⌘V(윈도우 Ctrl), 맥은 ⌥⌘V(복사해 둔 것 옮기기)도. 운영체제 클립보드와 이어져 Finder↔iSee 주고받기가 된다(맥에서 확인). 윈도우(CF_HDROP·탐색기 잘라내기)는 CI 빌드만, 실기 확인 안 됨.
 - ❌ 막힘: 사용자 윈도우 PC에서 "업데이트 확인"이 한참 뒤 실패(맥은 0.13초). 학교망 GitHub 차단·프록시 의심, 실패 창의 "자세한 내용" 문구를 아직 못 받음.
 
 ## 다음 할 일 (우선순위순)
@@ -21,7 +22,7 @@
 3. 사용자에게 제안해 둔 것: 공개 저장소의 GitHub secret scanning·push protection·Dependabot 켜기 (사용자 허락 필요)
 
 ## 수정 지도 (이걸 바꾸려면 → 여기)
-- 앱 명령·상태·이벤트 → `app/src-tauri/src/lib.rs` (거의 모든 Tauri 명령), 메뉴 → `menu.rs`, 사진 주소 isee:// → `protocol.rs`, 인쇄 창 → `print.rs`
+- 앱 명령·상태·이벤트 → `app/src-tauri/src/lib.rs` (거의 모든 Tauri 명령), 메뉴 → `menu.rs`, 파일 복사·붙여넣기용 운영체제 클립보드 → `clip.rs` (붙여넣기 자체는 `fsops::paste`), 사진 주소 isee:// → `protocol.rs`, 인쇄 창 → `print.rs`
 - 무거운 작업(목록·디코딩·분석·얼굴·클라우드) → `crates/isee-core/src/*.rs` (`cloud.rs`, `people.rs`, `analysis.rs`, `fsops.rs` …)
 - 화면 상태·공통 동작 → `app/src/lib/store.svelte.ts`, 명령 호출 타입 → `app/src/lib/api.ts`, 키·메뉴 연결 → `app/src/App.svelte`
 - 인쇄 배치·그리기 → `app/src/lib/print.ts` + `components/PrintView.svelte`
@@ -35,6 +36,8 @@
 - 사진 보기 속도를 늦추는 기능은 사용자 허락을 먼저 받는다.
 - 앱 화면 확인: 사용자의 iSee가 켜져 있으면 같은 식별자 앱은 바로 꺼진다(single-instance). `cd app && npx tauri build --debug --no-bundle --config '{"identifier":"com.isee.viewer.cloudtest","productName":"iSeeTest"}'` → target/debug/isee-app을 임시 iSeeTest.app(Info.plist에 같은 식별자, `codesign -s -`)에 넣고 `HOME=<가짜 홈>`으로 실행 → computer-use(배경 조작)로 확인. 드롭다운은 배경에서 못 바꿈.
 - 맥 WKWebView 인쇄는 반드시 `runOperationModalForWindow`(비동기). 동기 `runOperation`은 쪽이 끝없이 생겨 PDF가 1분에 1.3GB가 됐다. 개발 빌드는 `ISEE_PRINT_PDF=<경로>`면 인쇄 창 없이 PDF 저장 — 크기 감시와 함께 쓸 것.
+- 복사·붙여넣기 키: 맥은 편집 메뉴 항목(⌘C·⌘X·⌘V)이 받고, 글자 칸이면 화면이 `native_edit`로 웹뷰에 copy:/paste:를 돌려준다. 윈도우는 기본 메뉴 항목이 Ctrl+C 키를 보내 화면(JS)이 받는다. macOS는 앱이 몰래 클립보드 내용을 읽으면 허용 창을 띄울 수 있어, 우클릭 메뉴는 종류만 보고(`has_files`) 내용은 붙여넣을 때만 읽는다.
+- computer-use 배경 조작은 클립보드에 닿는 메뉴·키(⌘C·⌘V)를 막는다 → 그 확인만 전체 화면 제어로, 메뉴 막대를 직접 눌러서 했다 (한글 입력 중 도구의 cmd+c는 cmd+a로 가 버림). 다른 디스크로의 복사·진행 표시는 `hdiutil create -type SPARSEBUNDLE` 이미지를 붙여서 확인.
 - 클라우드 전용 파일은 읽으면 내려받기가 시작된다. 새 기능은 `listing::is_online_only`를 먼저 확인. 시험은 사용자 개인 구글 드라이브의 작은 폴더로 하고 끝나면 다운로드 제거.
 - 맥 한글 경로는 NFC로 통일(`listing::nfc`). 서명 인증서가 바뀌면 사용자의 폴더 접근 허용이 풀린다 — 같은 인증서 유지.
 - 액션은 커밋 SHA로 고정됨: 올릴 때 SHA를 직접 바꿀 것. 저장소는 2026-10-30부터 공개(무료 빌드 시간 때문). 서명 키는 GitHub 비밀값과 `~/.tauri`에만.

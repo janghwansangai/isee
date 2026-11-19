@@ -202,6 +202,224 @@ pub fn transfer_as(path: &Path, to: &Path, copy: bool) -> anyhow::Result<Moved> 
     })
 }
 
+// ───────────── 붙여넣기 (⌘C·⌘X 후 ⌘V, 탐색기처럼) ─────────────
+
+/// 붙여넣기를 사용자가 멈췄다 (anyhow 오류 안에 들어 있으면 `e.is::<Cancelled>()`)
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("멈춤")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+/// 이보다 큰 파일은 조금씩 복사해 진행을 알리고 멈출 수 있게 한다 (작은 파일은 한 번에)
+const CHUNKED_FROM: u64 = 32 << 20;
+const CHUNK: usize = 4 << 20;
+
+/// 파일·폴더의 파일 수와 전체 크기. 정보만 읽으므로 클라우드 파일도 내려받지 않는다.
+pub fn tree_size(path: &Path) -> (u64, u64) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return (0, 0);
+    };
+    if !meta.is_dir() {
+        return (1, meta.len());
+    }
+    let mut total = (0, 0);
+    if let Ok(rd) = std::fs::read_dir(path) {
+        for e in rd.flatten() {
+            let (n, b) = tree_size(&e.path());
+            total.0 += n;
+            total.1 += b;
+        }
+    }
+    total
+}
+
+/// 같은 폴더인가 (맥 NFC/NFD, 윈도우 대소문자·짧은 이름이 달라도)
+fn same_dir(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// 복사 진행: 이 항목에서 지금까지 복사한 바이트를 알리고, 멈춤을 확인한다.
+struct Progress<'a> {
+    cancel: &'a std::sync::atomic::AtomicBool,
+    report: &'a mut dyn FnMut(u64),
+    done: u64,
+}
+
+impl Progress<'_> {
+    fn add(&mut self, n: u64) {
+        self.done += n;
+        (self.report)(self.done);
+    }
+    fn check(&self) -> anyhow::Result<()> {
+        if self.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Cancelled.into());
+        }
+        Ok(())
+    }
+}
+
+/// 같은 디스크인가 (같으면 맥 APFS는 복제(clone)라 큰 파일도 즉시 끝난다)
+#[cfg(unix)]
+fn same_device(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_device(_: &Path, _: &Path) -> bool {
+    false
+}
+
+fn copy_file(from: &Path, to: &Path, len: u64, chunked_from: u64, p: &mut Progress) -> anyhow::Result<()> {
+    p.check()?;
+    let to_dir = to.parent().unwrap_or(to);
+    // chunked_from이 0이면 늘 조금씩 복사한다 (시험용)
+    if chunked_from > 0 && (len < chunked_from || same_device(from, to_dir)) {
+        // 운영체제 복사: 날짜·권한(맥은 태그 등 확장 속성도)을 그대로 옮긴다
+        std::fs::copy(from, to)?;
+        p.add(len);
+        return Ok(());
+    }
+    use std::io::{Read, Write};
+    let mut src = std::fs::File::open(from)?;
+    let meta = src.metadata()?;
+    let mut dst = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        p.check()?;
+        let n = match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
+        dst.write_all(&buf[..n])?;
+        p.add(n as u64);
+    }
+    dst.flush()?;
+    // 수정한 날짜를 원본과 같게 (날짜순 정렬·날짜별 정리가 그대로 되게)
+    if let Ok(t) = meta.modified() {
+        let _ = dst.set_modified(t);
+    }
+    let _ = dst.set_permissions(meta.permissions());
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path, chunked_from: u64, p: &mut Progress) -> anyhow::Result<()> {
+    p.check()?;
+    let meta = std::fs::metadata(from)?;
+    if meta.is_dir() {
+        std::fs::create_dir(to)?;
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            copy_tree(&e.path(), &to.join(e.file_name()), chunked_from, p)?;
+        }
+        Ok(())
+    } else {
+        copy_file(from, to, meta.len(), chunked_from, p)
+    }
+}
+
+/// 만들다 만 사본을 지운다 (멈췄거나 실패했을 때. 새로 만든 이름이라 다른 파일이 아니다)
+fn remove_partial(to: &Path) {
+    if to.is_dir() {
+        let _ = std::fs::remove_dir_all(to);
+    } else {
+        let _ = std::fs::remove_file(to);
+    }
+}
+
+/// 붙여넣기 하나: path를 dest_dir 안으로 복사하거나(copy) 옮긴다. 이름이 겹치면 " (2)".
+/// 같은 폴더에 복사하면 사본을 만들고, 같은 폴더로 옮기면 할 일이 없어 None.
+/// report에는 이 항목에서 지금까지 복사한 바이트가 온다. cancel이 켜지면 Cancelled로 멈추고 만들던 사본을 지운다.
+pub fn paste(
+    path: &Path,
+    dest_dir: &Path,
+    copy: bool,
+    cancel: &std::sync::atomic::AtomicBool,
+    report: &mut dyn FnMut(u64),
+) -> anyhow::Result<Option<Moved>> {
+    paste_with(path, dest_dir, copy, cancel, report, CHUNKED_FROM)
+}
+
+fn paste_with(
+    path: &Path,
+    dest_dir: &Path,
+    copy: bool,
+    cancel: &std::sync::atomic::AtomicBool,
+    report: &mut dyn FnMut(u64),
+    chunked_from: u64,
+) -> anyhow::Result<Option<Moved>> {
+    if !dest_dir.is_dir() {
+        bail!("붙여넣을 폴더가 없음: {}", dest_dir.display());
+    }
+    if std::fs::symlink_metadata(path).is_err() {
+        bail!("원본이 없음 (이미 옮겼거나 지웠을 수 있음)");
+    }
+    if !copy && path.parent().is_some_and(|p| same_dir(p, dest_dir)) {
+        return Ok(None);
+    }
+    if path.is_dir() {
+        let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let dest_real = std::fs::canonicalize(dest_dir).unwrap_or_else(|_| dest_dir.to_path_buf());
+        if dest_real.starts_with(&real) {
+            bail!("폴더를 자기 안에 넣을 수 없음");
+        }
+    }
+    let to = unique_in(dest_dir, &file_name(path));
+    let mut p = Progress { cancel, report, done: 0 };
+    p.check()?;
+    if !copy {
+        match std::fs::rename(path, &to) {
+            Ok(()) => {
+                p.add(tree_size(&to).1);
+                return Ok(Some(Moved {
+                    from: path.to_string_lossy().into_owned(),
+                    to: to.to_string_lossy().into_owned(),
+                }));
+            }
+            // 다른 디스크면 복사한 뒤 원본을 지운다 (아래)
+            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if let Err(e) = copy_tree(path, &to, chunked_from, &mut p) {
+        remove_partial(&to);
+        return Err(e);
+    }
+    if !copy {
+        // 사본을 다 만든 다음에만 원본을 지운다 (도중에 멈추면 원본은 그대로)
+        if path.is_dir() {
+            // 폴더는 일부만 지워졌을 수 있으니 사본을 남겨 둔다 (지우면 사진을 잃을 수 있다)
+            if let Err(e) = std::fs::remove_dir_all(path) {
+                bail!("'{}'에 복사는 했지만 원래 폴더를 다 지우지 못함: {e}", file_name(&to));
+            }
+        } else if let Err(e) = std::fs::remove_file(path) {
+            remove_partial(&to);
+            bail!("원본을 지우지 못해 옮기지 않음: {e}");
+        }
+    }
+    Ok(Some(Moved {
+        from: path.to_string_lossy().into_owned(),
+        to: to.to_string_lossy().into_owned(),
+    }))
+}
+
 /// 이동을 되돌린다 (to → from).
 pub fn undo_move(m: &Moved) -> anyhow::Result<()> {
     let from = Path::new(&m.from);
@@ -269,6 +487,79 @@ mod tests {
         assert_eq!(std::fs::read(a.join("x.jpg")).unwrap(), b"1");
         let c = transfer(&a.join("x.jpg"), &b, true).unwrap();
         assert!(a.join("x.jpg").exists() && Path::new(&c.to).exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn paste_copies_moves_and_keeps_both_names() {
+        use std::sync::atomic::AtomicBool;
+        let d = tmp("paste");
+        let a = d.join("가");
+        let b = d.join("나");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("x.jpg"), b"1").unwrap();
+        std::fs::write(b.join("x.jpg"), b"2").unwrap();
+        let no = AtomicBool::new(false);
+        let mut sink = |_| {};
+        // 같은 폴더에 복사하면 사본, 다른 폴더에 같은 이름이 있으면 " (2)" (덮어쓰지 않음)
+        let same = paste(&a.join("x.jpg"), &a, true, &no, &mut sink).unwrap().unwrap();
+        assert!(same.to.ends_with("x (2).jpg"));
+        let other = paste(&a.join("x.jpg"), &b, true, &no, &mut sink).unwrap().unwrap();
+        assert!(other.to.ends_with("x (2).jpg"));
+        assert_eq!(std::fs::read(b.join("x.jpg")).unwrap(), b"2");
+        assert_eq!(std::fs::read(b.join("x (2).jpg")).unwrap(), b"1");
+        // 같은 폴더로 옮기기는 할 일 없음, 다른 폴더로 옮기면 원본이 사라지고 되돌릴 수 있다
+        assert!(paste(&a.join("x.jpg"), &a, false, &no, &mut sink).unwrap().is_none());
+        let m = paste(&a.join("x.jpg"), &b, false, &no, &mut sink).unwrap().unwrap();
+        assert!(!a.join("x.jpg").exists() && m.to.ends_with("x (3).jpg"));
+        undo_move(&m).unwrap();
+        assert_eq!(std::fs::read(a.join("x.jpg")).unwrap(), b"1");
+        // 없는 원본, 폴더를 자기 안에 넣기는 실패
+        assert!(paste(&a.join("없음.jpg"), &b, true, &no, &mut sink).is_err());
+        assert!(paste(&a, &a, true, &no, &mut sink).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn paste_folder_reports_bytes_and_keeps_dates() {
+        use std::sync::atomic::AtomicBool;
+        let d = tmp("paste-tree");
+        let src = d.join("앨범");
+        std::fs::create_dir_all(src.join("속")).unwrap();
+        std::fs::write(src.join("a.jpg"), vec![7u8; 10_000]).unwrap();
+        std::fs::write(src.join("속").join("b.jpg"), vec![8u8; 25_000]).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        std::fs::File::options().write(true).open(src.join("a.jpg")).unwrap().set_modified(old).unwrap();
+        let dest = d.join("받는곳");
+        std::fs::create_dir_all(&dest).unwrap();
+        assert_eq!(tree_size(&src), (2, 35_000));
+        let no = AtomicBool::new(false);
+        let mut last = 0;
+        // 조금씩 복사하는 길(큰 파일용)도 시험한다
+        let m = paste_with(&src, &dest, true, &no, &mut |b| last = b, 0).unwrap().unwrap();
+        assert_eq!(last, 35_000);
+        let to = Path::new(&m.to);
+        assert_eq!(std::fs::read(to.join("속").join("b.jpg")).unwrap(), vec![8u8; 25_000]);
+        assert_eq!(std::fs::metadata(to.join("a.jpg")).unwrap().modified().unwrap(), old);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn paste_stops_when_cancelled_and_leaves_nothing_half_done() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let d = tmp("paste-cancel");
+        let a = d.join("a");
+        let b = d.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("big.mov"), vec![1u8; 3 * CHUNK]).unwrap();
+        let stop = AtomicBool::new(false);
+        // 첫 조각을 복사한 뒤 멈춤을 누른 것처럼
+        let r = paste_with(&a.join("big.mov"), &b, true, &stop, &mut |_| stop.store(true, Ordering::Relaxed), 0);
+        assert!(r.unwrap_err().is::<Cancelled>());
+        assert!(a.join("big.mov").exists());
+        assert_eq!(std::fs::read_dir(&b).unwrap().count(), 0, "만들던 사본은 지운다");
         std::fs::remove_dir_all(&d).unwrap();
     }
 

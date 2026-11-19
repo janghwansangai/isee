@@ -223,6 +223,7 @@
           class:drop={e.kind === "dir" && store.dropOver === e.path}
           class:multi={store.selected.size > 1}
           class:rejected={m?.flag === -1}
+          class:cut={store.cutPaths.has(e.path)}
           style="transform:translateY({y}px);width:{cellW}px;height:{ROW}px"
           data-index={i}
           data-drop-path={e.kind === "dir" ? e.path : undefined}
@@ -254,6 +255,7 @@
           class:sel={store.selected.has(i)}
           class:focus={store.focus === i}
           class:drop={e.kind === "dir" && store.dropOver === e.path}
+          class:cut={store.cutPaths.has(e.path)}
           style="transform:translate({x}px,{y}px);width:{cellW}px"
           data-index={i}
           data-drop-path={e.kind === "dir" ? e.path : undefined}
@@ -323,6 +325,12 @@
   }
   .thumb.rejected img {
     opacity: 0.35;
+  }
+  /* 잘라낸 파일 (붙여넣으면 옮겨짐): 탐색기처럼 흐리게 */
+  .cell.cut .thumb,
+  .row.cut .lthumb,
+  .row.cut .ltext {
+    opacity: 0.45;
   }
   .check {
     position: absolute;

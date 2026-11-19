@@ -7,6 +7,7 @@ import {
   baseName,
   fmtDuration,
   fmtSize,
+  isMac,
   scopeLabel,
   type CloudDone,
   type CloudEstimate,
@@ -14,6 +15,7 @@ import {
   type ConvertSpec,
   type Entry,
   type Mark,
+  type PasteProgress,
   type Place,
   type SaveSpec,
   type Scope,
@@ -114,8 +116,13 @@ class Store {
   print = $state<Entry[] | null>(null);
   /** 날짜·장소별 정리 화면: 고른 항목 (비어 있으면 폴더 전체) */
   organize = $state<{ folder: string; paths: string[] } | null>(null);
-  /** 변환 진행 상황 (끝난 수 / 전체) */
-  progress = $state<{ done: number; total: number; label: string } | null>(null);
+  /** 변환·붙여넣기 진행 상황 (끝난 수 / 전체). bytes: [복사한 바이트, 전체], cancel: 멈춤 단추를 보인다 */
+  progress = $state<{ done: number; total: number; label: string; bytes?: [number, number]; cancel?: boolean } | null>(null);
+  /** ⌘C·⌘X로 담은 파일 (잘라낸 것은 붙여넣을 때까지 흐리게 보인다) */
+  clip = $state<{ paths: string[]; cut: boolean } | null>(null);
+  cutPaths = $derived(new Set(this.clip?.cut ? this.clip.paths : []));
+  private pasting = false;
+  private pasteLast: PasteProgress | null = null;
   /** 탐색 기록 */
   private history: string[] = [];
   hpos = $state(-1);
@@ -431,6 +438,7 @@ class Store {
     const keep = new Set(this.selectedPaths());
     const focusAt = this.focus;
     const viewerAt = this.viewer;
+    const viewerPath = this.entries[viewerAt]?.path;
     const l = await api.openFolder(this.scope());
     this.entries = l.entries;
     this.marks = l.marks;
@@ -443,9 +451,12 @@ class Store {
     this.focus = Math.min(focusAt, l.entries.length - 1);
     if (this.selected.size === 0 && this.focus >= 0) this.selected.add(this.focus);
     if (viewerAt >= 0) {
+      // 보던 사진이 그대로 있으면 그 사진 (붙여넣기로 앞에 파일이 늘어난 경우 등)
+      const same = viewerPath ? l.entries.findIndex((e) => e.path === viewerPath) : -1;
       // 뷰어에서 지운 경우: 같은 자리(다음 사진), 없으면 앞 사진
       const imgs = this.imageIndices;
-      if (imgs.length === 0) this.viewer = -1;
+      if (same >= 0) this.viewer = same;
+      else if (imgs.length === 0) this.viewer = -1;
       else this.viewer = imgs.find((i) => i >= viewerAt) ?? imgs[imgs.length - 1];
     }
   }
@@ -541,6 +552,102 @@ class Store {
     const r = await api.transfer(paths, dest, copy);
     this.report(r, copy ? `'${baseName(dest)}'에 복사했습니다` : `'${baseName(dest)}'(으)로 옮겼습니다`);
     if (!copy) await this.reload();
+  }
+
+  /** ⌘C(복사)·⌘X(잘라내기): 고른 파일을 클립보드에 담는다. 다른 폴더에서 ⌘V로 붙여넣는다.
+   *  운영체제 클립보드에도 담으므로 Finder·탐색기에도 붙여넣을 수 있다. */
+  async copyFiles(cut: boolean) {
+    const paths = this.targets();
+    if (!paths.length) {
+      this.showToast(cut ? "잘라낼 파일을 고르세요" : "복사할 파일을 고르세요");
+      return;
+    }
+    await api.clipFiles(paths, cut);
+    this.clip = { paths, cut };
+    const what = paths.length === 1 ? `'${baseName(paths[0])}'` : `${paths.length.toLocaleString()}개`;
+    const V = isMac ? "⌘V" : "Ctrl+V";
+    this.showToast(
+      cut
+        ? `${what}를 잘라냈습니다. 옮길 폴더로 가서 ${V}를 누르세요`
+        : `${what}를 복사했습니다. 붙여넣을 폴더로 가서 ${V}를 누르세요${isMac ? " (⌥⌘V는 옮기기)" : ""}`,
+    );
+  }
+
+  /** ⌘V: 지금 폴더에 붙여넣는다 (move: 복사해 둔 것도 옮김, 맥 ⌥⌘V). 끝나면 붙여넣은 파일을 고른다. */
+  async pasteFiles(move: boolean) {
+    const dest = this.path;
+    if (!dest) return;
+    if (this.pasting) {
+      this.showToast("붙여넣는 중입니다. 끝나면 다시 해 주세요");
+      return;
+    }
+    if (this.progress) {
+      this.showToast(`${this.progress.label}이 끝난 뒤 붙여넣어 주세요`);
+      return;
+    }
+    this.pasting = true;
+    this.pasteLast = null;
+    // 금방 끝나면 진행 표시 없이 결과만 (깜박이지 않게)
+    const timer = window.setTimeout(() => {
+      if (!this.pasting || this.progress) return;
+      this.progress = { done: 0, total: 0, label: "붙여넣기", cancel: true };
+      if (this.pasteLast) this.onPasteProgress(this.pasteLast);
+    }, 300);
+    try {
+      const r = await api.pasteFiles(dest, move);
+      if (r.empty) {
+        this.showToast(`붙여넣을 파일이 없습니다. 먼저 파일을 고르고 ${isMac ? "⌘C" : "Ctrl+C"}로 복사하세요`);
+        return;
+      }
+      if (r.moved && r.ok.length) this.clip = null;
+      if (this.path === dest) {
+        await this.reload();
+        this.selectPaths(r.ok);
+      }
+      const n = r.ok.length;
+      const where = `'${baseName(dest) || dest}'`;
+      const verb = r.moved ? "옮겼습니다" : "붙여넣었습니다";
+      let msg: string;
+      if (r.cancelled) msg = n ? `붙여넣기를 멈췄습니다 (${n.toLocaleString()}개는 ${verb})` : "붙여넣기를 멈췄습니다";
+      else if (n === 0 && r.skipped && !r.failed.length) msg = "이미 이 폴더에 있어 그대로 두었습니다";
+      else msg = `${where}에 ${n.toLocaleString()}개를 ${verb}${r.skipped ? ` · ${r.skipped}개는 이미 이 폴더에 있음` : ""}`;
+      if (r.failed.length) {
+        const f = r.failed[0];
+        msg += ` · ${r.failed.length.toLocaleString()}개 실패 (${baseName(f.path)}: ${f.error})`;
+      }
+      this.showToast(msg, { error: r.failed.length > 0, undo: n > 0 });
+    } catch (e) {
+      this.showToast(`붙여넣지 못했습니다: ${e}`, { error: true });
+    } finally {
+      clearTimeout(timer);
+      this.pasting = false;
+      this.endPasteProgress();
+    }
+  }
+
+  private endPasteProgress() {
+    if (this.progress?.label === "붙여넣기") this.progress = null;
+  }
+
+  /** 붙여넣기 진행 ("paste-progress" 이벤트) */
+  onPasteProgress(p: PasteProgress) {
+    if (!this.pasting) return;
+    this.pasteLast = p;
+    // 아직 진행 표시를 띄우지 않았으면 값만 기억해 둔다 (300ms 뒤에 띄움)
+    if (this.progress?.label !== "붙여넣기") return;
+    this.progress = { done: p.done, total: p.total, label: "붙여넣기", bytes: [p.bytes, p.total_bytes], cancel: true };
+  }
+
+  /** 이 경로들을 고르고 첫 번째로 스크롤한다 (붙여넣은 파일) */
+  selectPaths(paths: string[]) {
+    const want = new Set(paths);
+    const idx = this.entries.flatMap((e, i) => (want.has(e.path) ? [i] : []));
+    if (!idx.length) return;
+    this.selected.clear();
+    for (const i of idx) this.selected.add(i);
+    this.focus = idx[0];
+    this.anchor = idx[0];
+    this.scrollTo = idx[0];
   }
 
   /** 숫자키 1~9: 지정된 폴더로 이동 (Shift면 복사). 지정 안 됐으면 폴더를 고르게 한다. */
