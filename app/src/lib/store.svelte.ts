@@ -46,6 +46,7 @@ const DEFAULT_SETTINGS: Settings = {
   view_mode: "grid",
   include_subfolders: false,
   thumb_size: 168,
+  side_width: 230,
   quick_folders: Array(9).fill(null),
   last_folder: null,
   convert_save: "new",

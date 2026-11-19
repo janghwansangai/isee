@@ -40,6 +40,33 @@
   import { checkForUpdate, scheduleUpdateCheck } from "./lib/update";
 
   let cols = $state(1);
+
+  /** 왼쪽 위치 목록 폭: 경계를 끄는 동안은 화면에서만 바꾸고, 놓을 때 설정에 저장한다 (두 번 누르면 기본 폭). */
+  const SIDE_DEFAULT = 230;
+  let sideDrag = $state<number | null>(null);
+  const clampSide = (w: number) => Math.round(Math.min(Math.max(w, 160), Math.max(160, Math.min(560, window.innerWidth * 0.4))));
+  let sideW = $derived(sideDrag ?? store.settings.side_width ?? SIDE_DEFAULT);
+  function startSideResize(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    const w0 = el.parentElement?.getBoundingClientRect().width ?? sideW;
+    const move = (ev: PointerEvent) => (sideDrag = clampSide(w0 + ev.clientX - x0));
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      const w = sideDrag;
+      if (w === null || w === store.settings.side_width) sideDrag = null;
+      else store.setSettings({ side_width: w }).finally(() => (sideDrag = null));
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  }
+
   let viewer = $state<ReturnType<typeof Viewer>>();
   let compareView = $state<ReturnType<typeof Compare>>();
   let similarView = $state<ReturnType<typeof SimilarView>>();
@@ -688,9 +715,20 @@
 
 <svelte:window onkeydown={onKey} onpointerup={() => ctxPending && openContextMenu()} />
 
-<div class="app" class:info={store.settings.show_info}>
+<div class="app" class:info={store.settings.show_info} class:resizing={sideDrag !== null} style:--side-w="{sideW}px">
   <div class="toolbar"><Toolbar /></div>
-  <div class="side"><Sidebar /></div>
+  <div class="side">
+    <Sidebar />
+    <div
+      class="side-resize"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="위치 목록 폭"
+      title="끌어서 폭 조절 · 두 번 누르면 기본 폭"
+      onpointerdown={startSideResize}
+      ondblclick={() => store.setSettings({ side_width: SIDE_DEFAULT })}
+    ></div>
+  </div>
   <main class="main">
     <Grid bind:cols onOpen={openEntry} onContext={() => onContext()} {onDragStart} />
   </main>
@@ -801,7 +839,8 @@
 <style>
   .app {
     display: grid;
-    grid-template-columns: 230px 1fr;
+    /* 창을 줄이면 위치 목록도 창 폭의 40%까지만 */
+    grid-template-columns: min(var(--side-w, 230px), 40vw) 1fr;
     grid-template-rows: 40px 1fr 26px;
     grid-template-areas:
       "toolbar toolbar"
@@ -810,7 +849,7 @@
     height: 100vh;
   }
   .app.info {
-    grid-template-columns: 230px 1fr 260px;
+    grid-template-columns: min(var(--side-w, 230px), 40vw) 1fr 260px;
     grid-template-areas:
       "toolbar toolbar toolbar"
       "side main info"
@@ -822,6 +861,37 @@
   .side {
     grid-area: side;
     min-height: 0;
+    min-width: 0;
+    position: relative;
+  }
+  /* 위치 목록 오른쪽 경계: 끌어서 폭 조절 */
+  .side-resize {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: -3px;
+    width: 7px;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 5;
+  }
+  .side-resize::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 3px;
+    background: transparent;
+    transition: background 0.15s 0.1s;
+  }
+  .side-resize:hover::after,
+  .app.resizing .side-resize::after {
+    background: var(--accent);
+  }
+  .app.resizing {
+    cursor: col-resize;
+    user-select: none;
   }
   .main {
     grid-area: main;

@@ -75,7 +75,7 @@
     <span class="twisty"></span>
   {/if}
   <span class="ico {icon}"><Icon name={icon} size={15} /></span>
-  <span class="label">{name}</span>
+  <span class="label" title={name}>{name}</span>
   {#if badge}<span class="badge">{badge}</span>{/if}
 </div>
 {#if expanded && children}

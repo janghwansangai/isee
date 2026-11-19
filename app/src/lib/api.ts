@@ -83,6 +83,8 @@ export interface Settings {
   /** 하위 폴더 사진도 함께 보기 (사진이 많아질 수 있어 기본은 꺼짐) */
   include_subfolders: boolean;
   thumb_size: number;
+  /** 왼쪽 위치 목록 폭 (px) */
+  side_width: number;
   quick_folders: (string | null)[];
   last_folder: string | null;
   convert_save: "new" | "overwrite" | "folder";

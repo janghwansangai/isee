@@ -44,6 +44,8 @@ pub struct Settings {
     pub include_subfolders: bool,
     /// 썸네일 칸 크기 (CSS px)
     pub thumb_size: u32,
+    /// 왼쪽 위치 목록 폭 (CSS px). 경계를 끌어 바꾸고, 두 번 누르면 기본값으로.
+    pub side_width: u32,
     /// 숫자키 1~9 빠른 이동 폴더
     pub quick_folders: Vec<Option<String>>,
     pub last_folder: Option<String>,
@@ -83,6 +85,7 @@ impl Default for Settings {
             view_mode: "grid".into(),
             include_subfolders: false,
             thumb_size: 168,
+            side_width: 230,
             quick_folders: vec![None; 9],
             last_folder: None,
             view_box: (0, 0),
