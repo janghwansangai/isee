@@ -502,8 +502,20 @@ pub fn undo(a: &Applied) -> anyhow::Result<()> {
     for m in a.moved.iter().rev() {
         fsops::undo_move(m)?;
     }
+    // 덮어쓴 자리의 사본은 이름을 비켜서 휴지통으로: 윈도우 휴지통은 원래 경로로 찾아 되살리므로,
+    // 같은 경로가 둘(바꾼 원래 파일·사본)이면 사본을 되살릴 수 있다
+    let replaced: std::collections::HashSet<&str> = a.replaced.iter().map(|t| t.original.as_str()).collect();
     for p in &a.copied {
-        fsops::trash(Path::new(p))?;
+        let path = Path::new(p);
+        if replaced.contains(p.as_str())
+            && let (Some(dir), Some(name)) = (path.parent(), path.file_name())
+        {
+            let aside = fsops::unique_in(dir, &name.to_string_lossy());
+            std::fs::rename(path, &aside)?;
+            fsops::trash(&aside)?;
+        } else {
+            fsops::trash(path)?;
+        }
     }
     fsops::restore(&a.replaced)?;
     for d in a.created.iter().rev() {
@@ -648,7 +660,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(s("민준/b.jpg")).unwrap(), "b");
         assert_eq!(std::fs::read_to_string(s("민준/b (2).jpg")).unwrap(), "other-b");
         assert_eq!(a.replaced.len(), 1);
-        // 되돌리면 원래 파일이 제자리로
+        // GitHub의 윈도우 빌드 서버처럼 휴지통이 없는 환경이면 되돌리기는 확인할 수 없다 (실제 PC에서 확인)
+        #[cfg(windows)]
+        if !trash::os_limited::list().unwrap().iter().any(|i| i.name == "a.jpg") {
+            eprintln!("이 환경에는 휴지통이 없어 되돌리기 확인을 건너뜀");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        // 되돌리면 원래 파일이 제자리로 (사본이 아니라)
         undo(&a).unwrap();
         assert_eq!(std::fs::read_to_string(s("민준/a.jpg")).unwrap(), "old");
         assert!(!dir.join("민준/b (2).jpg").exists());
