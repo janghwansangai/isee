@@ -112,12 +112,71 @@
     return dot > 0 ? e.name.slice(dot + 1).toUpperCase() : "";
   }
 
+  // ───── 빈 곳에서 끌어 상자로 고르기 (탐색기·Finder처럼) ─────
+  /** 상자 (칸을 그리는 판 기준 좌표) */
+  let band = $state<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  let bandFrom: { x: number; y: number; base: number[] } | null = null;
+  let bandPointer = { x: 0, y: 0 };
+  let bandRaf = 0;
+
+  /** 화면 좌표 → 칸을 그리는 판(.canvas) 기준 좌표 */
+  function canvasPoint(cx: number, cy: number) {
+    const r = el.getBoundingClientRect();
+    return { x: cx - r.left, y: cy - r.top + el.scrollTop - (top0 - cy0) };
+  }
+
+  function applyBand() {
+    const b = band;
+    if (!b || !bandFrom) return;
+    const [x0, x1] = [Math.min(b.x0, b.x1), Math.max(b.x0, b.x1)];
+    const [y0, y1] = [Math.min(b.y0, b.y1), Math.max(b.y0, b.y1)];
+    const hits: number[] = [];
+    const cellH = list ? ROW : cellW + CAPTION;
+    const n = store.entries.length;
+    for (let r = Math.max(0, Math.floor((y0 - cy0) / rowH)); r <= Math.min(rows - 1, Math.floor((y1 - cy0) / rowH)); r++) {
+      const top = cy0 + r * rowH;
+      if (y1 < top || y0 > top + cellH) continue;
+      for (let c = 0; c < cols; c++) {
+        const left = list ? 0 : PAD + c * (cellW + GAP);
+        const i = r * cols + c;
+        if (i < n && x1 >= left && x0 <= left + cellW) hits.push(i);
+      }
+    }
+    store.selected.clear();
+    for (const i of bandFrom.base) store.selected.add(i);
+    for (const i of hits) store.selected.add(i);
+    if (hits.length) {
+      store.anchor = hits[0];
+      store.focus = hits[hits.length - 1];
+    }
+  }
+
+  /** 끄는 동안 위아래 끝에 가까우면 스크롤 */
+  function bandScroll() {
+    if (!band) return;
+    const r = el.getBoundingClientRect();
+    const dy = bandPointer.y < r.top + hidTop + 36 ? -16 : bandPointer.y > r.bottom - 36 ? 16 : 0;
+    if (dy) {
+      el.scrollTop += dy;
+      const p = canvasPoint(bandPointer.x, bandPointer.y);
+      band = { ...band, x1: p.x, y1: p.y };
+      applyBand();
+    }
+    bandRaf = requestAnimationFrame(bandScroll);
+  }
+
   function onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest(".lhead")) return;
     const i = indexAt(e);
     if (i < 0) {
-      store.selected.clear();
+      // 스크롤 막대를 잡은 것은 빼고, 빈 곳에서 누르면 상자 고르기 시작 (⌘·Shift면 지금 선택에 더한다)
+      if (e.clientX - el.getBoundingClientRect().left > el.clientWidth) return;
+      const add = e.metaKey || e.ctrlKey || e.shiftKey;
+      if (!add) store.selected.clear();
+      bandFrom = { ...canvasPoint(e.clientX, e.clientY), base: add ? [...store.selected] : [] };
+      bandPointer = { x: e.clientX, y: e.clientY };
+      el.setPointerCapture(e.pointerId);
       return;
     }
     // 왼쪽 위 체크 상자는 ⌘(Ctrl)-클릭과 같다: 다른 선택을 유지한 채 이것만 넣고 뺀다
@@ -144,6 +203,17 @@
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (bandFrom) {
+      bandPointer = { x: e.clientX, y: e.clientY };
+      const p = canvasPoint(e.clientX, e.clientY);
+      if (!band) {
+        if (Math.hypot(p.x - bandFrom.x, p.y - bandFrom.y) < 5) return;
+        bandRaf = requestAnimationFrame(bandScroll);
+      }
+      band = { x0: bandFrom.x, y0: bandFrom.y, x1: p.x, y1: p.y };
+      applyBand();
+      return;
+    }
     // 눌림 여부는 pointerdown/up으로 직접 기억한다 (포인터를 붙잡고 있으므로 up을 놓치지 않음)
     if (!down) return;
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) {
@@ -155,6 +225,9 @@
   function onPointerUp(e: PointerEvent) {
     if (down?.deferSelect) store.selectOnly(down.i);
     down = null;
+    band = null;
+    bandFrom = null;
+    cancelAnimationFrame(bandRaf);
     if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
   }
 
@@ -182,6 +255,7 @@
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
+  onpointercancel={onPointerUp}
   ondblclick={onDblClick}
   oncontextmenu={onContextMenu}
   role="listbox"
@@ -291,6 +365,12 @@
         </div>
       {/if}
     {/each}
+    {#if band}
+      <div
+        class="band"
+        style="left:{Math.min(band.x0, band.x1)}px; top:{Math.min(band.y0, band.y1)}px; width:{Math.abs(band.x1 - band.x0)}px; height:{Math.abs(band.y1 - band.y0)}px"
+      ></div>
+    {/if}
   </div>
 </div>
 
@@ -304,6 +384,13 @@
   }
   .canvas {
     position: relative;
+  }
+  .band {
+    position: absolute;
+    z-index: 4;
+    border: 1px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    pointer-events: none;
   }
   .cell {
     position: absolute;

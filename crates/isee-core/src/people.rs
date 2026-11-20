@@ -24,7 +24,9 @@ pub const MIN_FACE_PX: f32 = 36.0;
 /// 지문을 뜰 때 읽는 사진 크기 (긴 변). 얼굴 찾기는 SIZE로 줄인 그림에서 하고, 지문은 원본에 가까운 그림에서 뜬다
 /// (4000px 사진이면 얼굴이 1.3배 크게 들어간다). 메모리 때문에 이보다 큰 사진은 줄인다 (작업 하나에 약 50MB).
 const FULL: u32 = 4096;
-/// 분석 방식이 바뀌면 올린다 (다시 분석하되 사용자가 붙인 이름은 이어받는다)
+/// 분석 방식의 판. 새로 분석한 사진의 기록 열쇠에 들어간다.
+/// 0.1.14부터는 판을 올려도 예전 판의 분석 기록을 그대로 쓴다 (photo_keys): 분석 시간이 오래 걸리므로
+/// 사용자가 "얼굴 데이터 지우기"를 하기 전에는 업데이트 때문에 다시 분석하지 않는다.
 /// 3: 눈·코·입 위치를 얼굴마다 다시 잡고(faces::Models::refine) 원본 크기에서 지문을 뜬다
 const VERSION: u32 = 3;
 
@@ -127,6 +129,52 @@ fn photo_key(path: &str, size: u64, mtime: i64) -> i64 {
     key_of(path, size, mtime, 0xFACE_0000 + VERSION)
 }
 
+/// 이 판과 예전 판들의 열쇠 (지금 판부터). 어느 판으로 분석했든 분석한 사진으로 친다.
+fn photo_keys(path: &str, size: u64, mtime: i64) -> impl Iterator<Item = i64> + '_ {
+    (1..=VERSION).rev().map(move |v| key_of(path, size, mtime, 0xFACE_0000 + v))
+}
+
+/// 같은 사진의 복사본으로 볼 이름인지: 확장자가 같고, 이름은 같거나 복사할 때 붙는 꼬리만 다르다
+/// ("사진 (2).jpg", "사진 2.jpg", "사진 copy.jpg", "사진 복사본.jpg", "사진 - 복사본.jpg", "사진 - Copy (3).jpg")
+fn same_photo_name(a: &str, b: &str) -> bool {
+    fn split(p: &str) -> (String, String) {
+        let name = Path::new(p).file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+        match name.rfind('.') {
+            Some(i) if i > 0 => (name[..i].to_string(), name[i..].to_string()),
+            _ => (name, String::new()),
+        }
+    }
+    fn stem(s: &str) -> &str {
+        let mut s = s.trim_end();
+        loop {
+            let before = s;
+            // " (3)", " 3"
+            if let Some(i) = s.rfind([' ', '(']) {
+                let tail = s[i..].trim_start_matches([' ', '(']).trim_end_matches(')');
+                if !tail.is_empty() && tail.len() <= 3 && tail.chars().all(|c| c.is_ascii_digit()) {
+                    s = s[..i].trim_end();
+                }
+            }
+            for t in [" copy", " 복사본", " - copy", " - 복사본", " 사본"] {
+                if let Some(x) = s.strip_suffix(t) {
+                    s = x.trim_end_matches([' ', '-']).trim_end();
+                }
+            }
+            if s == before {
+                return s;
+            }
+        }
+    }
+    let ((sa, ea), (sb, eb)) = (split(a), split(b));
+    ea == eb && !sa.is_empty() && stem(&sa) == stem(&sb)
+}
+
+fn has_column(conn: &Connection, table: &str, col: &str) -> bool {
+    conn.prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))
+        .and_then(|mut st| st.exists(params![col]))
+        .unwrap_or(false)
+}
+
 fn emb_blob(e: &[f32]) -> Vec<u8> {
     e.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
@@ -202,17 +250,121 @@ impl FaceDb {
         if !has_turn {
             conn.execute_batch("ALTER TABLE faces ADD COLUMN turn REAL;")?;
         }
+        // 0.1.14부터: 제외한 인물(사용자가 "제외"로 보낸 주변 사람)은 이름 없는 숨은 사람으로 둔다.
+        // 같은 사람의 얼굴은 다음에도 자동으로 그쪽으로 가서 인물 목록에 다시 나오지 않는다.
+        if !has_column(&conn, "people", "hidden") {
+            conn.execute_batch("ALTER TABLE people ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        // 0.1.14부터 분석 기록에 파일 크기·수정 시각을 함께 둔다: 복사하거나 옮긴 사진을 찾아 다시 분석하지 않으려고.
+        // 그 전 기록은 그 사진을 다시 볼 때(analyzed) 채운다.
+        if !has_column(&conn, "photos", "size") {
+            conn.execute_batch("ALTER TABLE photos ADD COLUMN size INTEGER; ALTER TABLE photos ADD COLUMN mtime INTEGER;")?;
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS photos_file ON photos(size, mtime);")?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
+    /// 분석한 사진인지 (예전 판으로 분석한 것도). 예전 기록에 없는 파일 크기·수정 시각은 이때 채운다.
     pub fn analyzed(&self, r: &Req) -> bool {
-        let k = photo_key(&nfc(&r.path), r.size, r.mtime);
+        let path = nfc(&r.path);
         let conn = self.conn.lock();
-        conn.prepare_cached("SELECT 1 FROM photos WHERE k = ?1")
-            .and_then(|mut s| s.query_row(params![k], |_| Ok(())).optional())
-            .ok()
-            .flatten()
-            .is_some()
+        let Ok(mut st) = conn.prepare_cached("SELECT size FROM photos WHERE k = ?1") else { return false };
+        for k in photo_keys(&path, r.size, r.mtime) {
+            match st.query_row(params![k], |row| row.get::<_, Option<i64>>(0)).optional() {
+                Ok(Some(size)) => {
+                    if size.is_none_or(|s| s < 0) {
+                        let _ = conn.execute("UPDATE photos SET size = ?2, mtime = ?3 WHERE k = ?1", params![k, r.size as i64, r.mtime]);
+                    }
+                    return true;
+                }
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+        }
+        false
+    }
+
+    /// 분석하지 않은 사진이 이미 분석한 사진의 복사본이거나 다른 폴더로 옮긴 것이면 그 결과를 그대로 쓴다
+    /// (사진을 읽지 않으므로 바로 끝나고, 클라우드 파일도 내려받지 않는다).
+    /// 같은 파일로 보는 것: 크기·수정 시각(밀리초)·확장자가 같고 이름은 같거나 복사 꼬리만 다른 것 (same_photo_name).
+    /// 원래 사진이 남아 있으면 얼굴을 복사하고(붙인 이름·"이 사람 아님"도), 없어졌으면 기록을 새 경로로 옮긴다.
+    /// 돌려주는 값: 이어받았는지
+    pub fn reuse(&self, r: &Req) -> bool {
+        let path = nfc(&r.path);
+        let mut conn = self.conn.lock();
+        let found: Vec<String> = conn
+            .prepare_cached("SELECT path FROM photos WHERE size = ?1 AND mtime = ?2 AND path != ?3")
+            .and_then(|mut st| st.query_map(params![r.size as i64, r.mtime, path], |row| row.get(0))?.collect())
+            .unwrap_or_default();
+        // 남아 있는 원본이 있으면 그것에서 복사하고, 모두 없어졌으면 옮긴 것으로 본다
+        let same: Vec<String> = found.into_iter().filter(|p| same_photo_name(p, &path)).collect();
+        let Some(first) = same.first().cloned() else { return false };
+        let alive = same.into_iter().find(|p| std::fs::symlink_metadata(p).is_ok());
+        let moved = alive.is_none();
+        let from = alive.unwrap_or(first);
+        let Ok(tx) = conn.transaction() else { return false };
+        let done = (|| -> rusqlite::Result<()> {
+            tx.execute("DELETE FROM faces WHERE path = ?1", params![path])?;
+            tx.execute("DELETE FROM photos WHERE path = ?1", params![path])?;
+            if moved {
+                tx.execute("UPDATE faces SET path = ?2 WHERE path = ?1", params![from, path])?;
+                tx.execute("DELETE FROM photos WHERE path = ?1", params![from])?;
+            } else {
+                tx.execute(
+                    "INSERT INTO faces (path, rect, px, emb, quality, person, not_person, crop, turn)
+                     SELECT ?2, rect, px, emb, quality, person, not_person, crop, turn FROM faces WHERE path = ?1 ORDER BY id",
+                    params![from, path],
+                )?;
+            }
+            tx.execute(
+                "INSERT OR REPLACE INTO photos (k, path, faces, size, mtime) VALUES (?1, ?2, (SELECT COUNT(*) FROM faces WHERE path = ?2), ?3, ?4)",
+                params![photo_key(&path, r.size, r.mtime), path, r.size as i64, r.mtime],
+            )?;
+            Ok(())
+        })();
+        done.is_ok() && tx.commit().is_ok()
+    }
+
+    /// 0.1.13까지의 분석 기록에 파일 크기·수정 시각을 채운다 (복사본·옮긴 사진을 찾을 수 있게).
+    /// 파일 정보만 읽으므로 클라우드 파일도 내려받지 않는다. 기록과 맞지 않거나(그 뒤로 바뀜) 없는 파일은 -1로 두어
+    /// 다음에 다시 읽지 않는다 (그 사진을 다시 보면 analyzed가 채운다). 앱이 켜질 때 백그라운드에서. 돌려주는 값: 채운 수
+    pub fn fill_file_info(&self) -> usize {
+        let rows: Vec<(i64, String)> = {
+            let conn = self.conn.lock();
+            conn.prepare("SELECT k, path FROM photos WHERE size IS NULL")
+                .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+                .unwrap_or_default()
+        };
+        if rows.is_empty() {
+            return 0;
+        }
+        // 파일을 읽는 동안에는 DB를 잡지 않는다 (인물 화면이 기다리지 않게)
+        let found: Vec<(i64, i64, i64)> = rows
+            .iter()
+            .map(|(k, path)| {
+                std::fs::metadata(path)
+                    .ok()
+                    .map(|m| (m.len(), crate::listing::mtime_ms(&m)))
+                    .filter(|&(s, m)| photo_keys(path, s, m).any(|x| x == *k))
+                    .map_or((*k, -1, -1), |(s, m)| (*k, s as i64, m))
+            })
+            .collect();
+        let mut conn = self.conn.lock();
+        let Ok(tx) = conn.transaction() else { return 0 };
+        for (k, s, m) in &found {
+            let _ = tx.execute("UPDATE photos SET size = ?2, mtime = ?3 WHERE k = ?1 AND size IS NULL", params![k, s, m]);
+        }
+        if tx.commit().is_err() {
+            return 0;
+        }
+        found.iter().filter(|f| f.1 >= 0).count()
+    }
+
+    /// 아직 분석하지 않은 사진만 (분석한 사진의 복사본·옮긴 것은 결과를 이어받고 뺀다).
+    /// 원본의 기록(크기·수정 시각)을 먼저 채우도록 분석한 사진부터 모두 확인한 뒤 이어받기를 찾는다.
+    pub fn not_analyzed(&self, reqs: Vec<Req>) -> Vec<Req> {
+        let rest: Vec<Req> = reqs.into_iter().filter(|r| !self.analyzed(r)).collect();
+        rest.into_iter().filter(|r| !self.reuse(r)).collect()
     }
 
     /// 사진 한 장의 분석 결과 저장 (같은 경로의 예전 결과는 바꾼다).
@@ -264,7 +416,10 @@ impl FaceDb {
             let _ = tx.execute("DELETE FROM apart WHERE a = ?1 OR b = ?1", params![o.0]);
         }
         let k = photo_key(&path, r.size, r.mtime);
-        let _ = tx.execute("INSERT OR REPLACE INTO photos (k, path, faces) VALUES (?1, ?2, ?3)", params![k, path, faces.len() as i64]);
+        let _ = tx.execute(
+            "INSERT OR REPLACE INTO photos (k, path, faces, size, mtime) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![k, path, faces.len() as i64, r.size as i64, r.mtime],
+        );
         let _ = tx.commit();
     }
 
@@ -366,6 +521,45 @@ impl FaceDb {
         Ok(())
     }
 
+    /// 제외: 이 얼굴들(주변 사람 한 명)을 이름 없는 숨은 사람으로 둔다. 인물 목록·인물별 폴더 정리에서 빠지고,
+    /// 같은 사람의 다른 얼굴도 다음에 자동으로 이쪽으로 온다. 돌려주는 값: 숨은 사람 번호
+    pub fn exclude(&self, faces: &[i64]) -> anyhow::Result<i64> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("INSERT INTO people (name, hidden) VALUES ('', 1)", [])?;
+        let id = tx.last_insert_rowid();
+        for f in faces {
+            tx.execute("UPDATE faces SET person = ?2, not_person = NULL WHERE id = ?1", params![f, id])?;
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// 제외 취소: (얼굴, 그 얼굴이 들어가 있던 숨은 사람). 다시 그 숨은 사람에게 자동으로 가지 않게 기억하고,
+    /// 얼굴이 하나도 남지 않은 숨은 사람은 지운다.
+    pub fn unexclude(&self, faces: &[(i64, i64)]) -> anyhow::Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        for (f, p) in faces {
+            tx.execute(
+                "UPDATE faces SET person = NULL, not_person = ?2 WHERE id = ?1 AND (SELECT hidden FROM people WHERE id = ?2) = 1",
+                params![f, p],
+            )?;
+        }
+        tx.execute("DELETE FROM people WHERE hidden = 1 AND id NOT IN (SELECT person FROM faces WHERE person IS NOT NULL)", [])?;
+        tx.execute("UPDATE faces SET not_person = NULL WHERE not_person IS NOT NULL AND not_person NOT IN (SELECT id FROM people)", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 제외한(숨은) 사람 번호
+    pub fn excluded_people(&self) -> std::collections::HashSet<i64> {
+        let conn = self.conn.lock();
+        conn.prepare("SELECT id FROM people WHERE hidden = 1")
+            .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+            .unwrap_or_default()
+    }
+
     /// 얼굴들을 이 사람으로 정한다
     pub fn assign(&self, faces: &[i64], person: i64) -> anyhow::Result<()> {
         let mut conn = self.conn.lock();
@@ -416,11 +610,33 @@ impl FaceDb {
     }
 
     /// 앱이 파일을 옮기거나 이름을 바꾸면 얼굴도 따라간다
+    /// 분석 기록의 열쇠도 새 경로로 바꾼다 (0.1.13까지는 경로만 바꿔서 옮긴 사진을 다시 분석했다)
     pub fn rename(&self, from: &str, to: &str) {
         let (from, to) = (nfc(from), nfc(to));
         let conn = self.conn.lock();
         let _ = conn.execute("UPDATE faces SET path = ?2 WHERE path = ?1", params![from, to]);
-        let _ = conn.execute("UPDATE photos SET path = ?2 WHERE path = ?1", params![from, to]);
+        let old: Option<(i64, Option<i64>, Option<i64>)> = conn
+            .query_row("SELECT k, size, mtime FROM photos WHERE path = ?1", params![from], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()
+            .ok()
+            .flatten();
+        let Some((k, size, mtime)) = old else { return };
+        // 예전 기록은 크기·수정 시각이 없으므로 옮긴 파일에서 읽고, 기록과 맞는지(그동안 바뀌지 않았는지) 확인한다
+        let file = match (size, mtime) {
+            (Some(s), Some(m)) => Some((s as u64, m)),
+            _ => std::fs::metadata(&*to)
+                .ok()
+                .map(|m| (m.len(), crate::listing::mtime_ms(&m)))
+                .filter(|&(s, m)| photo_keys(&from, s, m).any(|x| x == k)),
+        };
+        let _ = conn.execute("DELETE FROM photos WHERE path = ?1", params![to]);
+        let _ = match file {
+            Some((s, m)) => conn.execute(
+                "UPDATE photos SET k = ?3, path = ?2, size = ?4, mtime = ?5 WHERE path = ?1",
+                params![from, to, photo_key(&to, s, m), s as i64, m],
+            ),
+            None => conn.execute("UPDATE photos SET path = ?2 WHERE path = ?1", params![from, to]),
+        };
     }
 
     /// 0.1.5까지는 같은 사진이 경로의 꼴(NFC/NFD, listing::nfc 참고)만 다르게 두 벌 저장될 수 있었다.
@@ -546,14 +762,14 @@ fn merge_spellings_in(tx: &rusqlite::Transaction) -> rusqlite::Result<usize> {
         let fresh = std::fs::metadata(&path)
             .ok()
             .map(|m| (m.len(), crate::listing::mtime_ms(&m)))
-            .filter(|&(size, mtime)| old_k == Some(photo_key(&spellings[keep], size, mtime)));
+            .filter(|&(size, mtime)| old_k.is_some_and(|k| photo_keys(&spellings[keep], size, mtime).any(|x| x == k)));
         for p in &spellings {
             tx.execute("DELETE FROM photos WHERE path = ?1", params![p])?;
         }
         if let Some((size, mtime)) = fresh {
             tx.execute(
-                "INSERT OR REPLACE INTO photos (k, path, faces) VALUES (?1, ?2, (SELECT COUNT(*) FROM faces WHERE path = ?2))",
-                params![photo_key(&path, size, mtime), path],
+                "INSERT OR REPLACE INTO photos (k, path, faces, size, mtime) VALUES (?1, ?2, (SELECT COUNT(*) FROM faces WHERE path = ?2), ?3, ?4)",
+                params![photo_key(&path, size, mtime), path, size as i64, mtime],
             )?;
         }
     }
@@ -617,6 +833,8 @@ pub struct Report {
     pub groups: Vec<Group>,
     /// 미분류: 묶지 못한 얼굴 (같은 사람을 찾지 못함, 옆모습이라 뺌). 골라서 이름을 붙일 수 있다.
     pub unsorted: Vec<FaceRow>,
+    /// 제외한 인물 (사용자가 "제외"로 보낸 주변 사람). 숨은 사람마다 한 묶음, set_aside가 groups에서 옮긴다.
+    pub excluded: Vec<Group>,
     /// 미분류 가운데 혼자만 있는 얼굴 (묶을 상대가 없음)
     pub singles: usize,
     /// 미분류 가운데 옆모습이라 뺀 얼굴
@@ -718,6 +936,17 @@ pub fn group(
     report.unsorted.sort_by(|a, b| a.path.cmp(&b.path).then(a.rect[0].total_cmp(&b.rect[0])));
     report.ms = t0.elapsed().as_secs_f64() * 1000.0;
     report
+}
+
+/// 제외한(숨은) 사람의 묶음을 인물 목록에서 빼서 report.excluded로 옮긴다
+pub fn set_aside(report: &mut Report, hidden: &std::collections::HashSet<i64>) {
+    if hidden.is_empty() {
+        return;
+    }
+    let (out, keep): (Vec<Group>, Vec<Group>) =
+        std::mem::take(&mut report.groups).into_iter().partition(|g| g.person.is_some_and(|p| hidden.contains(&p)));
+    report.groups = keep;
+    report.excluded = out;
 }
 
 /// 이름 없는 얼굴 묶기
@@ -1120,10 +1349,10 @@ impl FaceService {
         *self.inner.on_progress.lock() = Some(f);
     }
 
-    /// 이 사진들을 분석한다 (이전 요청은 취소, 분석한 것은 건너뜀). (끝난 수, 전체)
+    /// 이 사진들을 분석한다 (이전 요청은 취소, 분석한 것과 분석한 사진의 복사본·옮긴 것은 건너뜀). (끝난 수, 전체)
     pub fn analyze(&self, reqs: Vec<Req>) -> (usize, usize) {
         let total = reqs.len();
-        let todo: VecDeque<Req> = reqs.into_iter().filter(|r| !self.inner.db.analyzed(r)).collect();
+        let todo: VecDeque<Req> = self.inner.db.not_analyzed(reqs).into();
         let done = total - todo.len();
         let mut st = self.inner.st.lock();
         st.generation += 1;
@@ -1382,8 +1611,155 @@ mod tests {
         assert_eq!(pairs, vec![(again[0].id.min(999), again[0].id.max(999))]);
         db.rename("/x/a.jpg", "/y/a.jpg");
         assert_eq!(db.faces_of(&["/y/a.jpg".into()]).len(), 1);
+        assert!(db.analyzed(&Req { path: "/y/a.jpg".into(), ..r }), "옮긴 사진은 다시 분석하지 않는다");
         db.clear().unwrap();
         assert!(db.people().is_empty());
+    }
+
+    fn one_face(db: &FaceDb, r: &Req, x: f32) {
+        let f = Face { rect: [x, 0.1, 0.2, 0.2], marks: [[0.0; 2]; 5], score: 0.9 };
+        db.put(r, &[Analyzed { face: f, px: 80.0, emb: vec![0.6, 0.8], quality: 1.0, crop: Some(vec![9]), turn: Some(0.1) }]);
+    }
+
+    #[test]
+    fn old_analysis_versions_are_kept() {
+        let db = FaceDb::open(None).unwrap();
+        let r = Req { path: "/x/a.jpg".into(), size: 10, mtime: 1, index: 0 };
+        // 예전 판(2)으로 분석한 기록: 크기·수정 시각 칸이 없던 때
+        db.conn
+            .lock()
+            .execute("INSERT INTO photos (k, path, faces) VALUES (?1, '/x/a.jpg', 0)", params![key_of("/x/a.jpg", 10, 1, 0xFACE_0000 + 2)])
+            .unwrap();
+        assert!(db.analyzed(&r), "업데이트로 판이 올라가도 다시 분석하지 않는다");
+        let (size, mtime): (Option<i64>, Option<i64>) =
+            db.conn.lock().query_row("SELECT size, mtime FROM photos", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((size, mtime), (Some(10), Some(1)), "예전 기록에 크기·수정 시각을 채운다");
+        // 파일이 바뀌면(크기·수정 시각) 다시 분석한다
+        assert!(!db.analyzed(&Req { mtime: 2, ..r.clone() }));
+    }
+
+    #[test]
+    fn copied_and_moved_photos_reuse_the_analysis() {
+        let dir = std::env::temp_dir().join(format!("isee-reuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("민준")).unwrap();
+        let at = |p: &str| dir.join(p).to_string_lossy().into_owned();
+        std::fs::write(at("a.jpg"), b"x").unwrap();
+        let db = FaceDb::open(None).unwrap();
+        let req = |p: &str| Req { path: at(p), size: 10, mtime: 5, index: 0 };
+        one_face(&db, &req("a.jpg"), 0.1);
+        let p = db.create_person("민준").unwrap();
+        let id = db.faces_of(&[at("a.jpg")])[0].id;
+        db.assign(&[id], p).unwrap();
+        // 복사본 (인물별 폴더, " (2)" 꼬리): 원본이 있으므로 얼굴을 복사하고 이름도 이어받는다
+        std::fs::write(at("민준/a.jpg"), b"x").unwrap();
+        std::fs::write(at("민준/a (2).jpg"), b"x").unwrap();
+        let todo = db.not_analyzed(vec![req("a.jpg"), req("민준/a.jpg"), req("민준/a (2).jpg"), req("b.jpg")]);
+        assert_eq!(todo.iter().map(|r| r.path.clone()).collect::<Vec<_>>(), vec![at("b.jpg")], "이름이 다른 사진만 분석");
+        for c in ["민준/a.jpg", "민준/a (2).jpg"] {
+            let rows = db.faces_of(&[at(c)]);
+            assert_eq!(rows.len(), 1);
+            assert_eq!((rows[0].person, db.crop(rows[0].id)), (Some(p), Some(vec![9])));
+            assert!(db.analyzed(&req(c)));
+        }
+        assert_eq!(db.faces_of(&[at("a.jpg")]).len(), 1, "원본은 그대로");
+        // 크기나 수정 시각이 다르면 다른 사진
+        assert!(!db.reuse(&Req { mtime: 6, ..req("c/a.jpg") }));
+        // 앱 밖에서 옮긴 것 (원본이 없어짐): 기록을 새 경로로 옮긴다 (얼굴 번호 그대로)
+        let db = FaceDb::open(None).unwrap();
+        one_face(&db, &req("a.jpg"), 0.1);
+        let id = db.faces_of(&[at("a.jpg")])[0].id;
+        std::fs::remove_file(at("a.jpg")).unwrap();
+        assert!(db.reuse(&req("다른/a.jpg")));
+        assert_eq!(db.faces_of(&[at("다른/a.jpg")])[0].id, id);
+        assert!(db.faces_of(&[at("a.jpg")]).is_empty());
+        // 앱에서 옮기면 열쇠도 새 경로로 (다시 분석하지 않음)
+        db.rename(&at("다른/a.jpg"), &at("또/a.jpg"));
+        assert!(db.analyzed(&req("또/a.jpg")));
+        assert!(!db.analyzed(&req("다른/a.jpg")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copies_of_photos_analyzed_by_older_versions_are_found() {
+        let dir = std::env::temp_dir().join(format!("isee-oldrec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let orig = dir.join("a.jpg").to_string_lossy().into_owned();
+        std::fs::write(&orig, b"photo").unwrap();
+        let m = std::fs::metadata(&orig).unwrap();
+        let (size, mtime) = (m.len(), crate::listing::mtime_ms(&m));
+        let db = FaceDb::open(None).unwrap();
+        one_face(&db, &Req { path: orig.clone(), size, mtime, index: 0 }, 0.1);
+        // 0.1.13까지의 기록 모양: 예전 판 열쇠, 크기·수정 시각 없음. 없는 파일의 기록도 하나.
+        {
+            let conn = db.conn.lock();
+            conn.execute("UPDATE photos SET k = ?1, size = NULL, mtime = NULL", params![key_of(&orig, size, mtime, 0xFACE_0000 + 2)])
+                .unwrap();
+            conn.execute("INSERT INTO photos (k, path, faces) VALUES (7, '/없는/b.jpg', 0)", []).unwrap();
+        }
+        let copy = Req { path: "/다른 곳/a.jpg".into(), size, mtime, index: 0 };
+        assert!(!db.reuse(&copy), "채우기 전에는 찾지 못한다");
+        assert_eq!(db.fill_file_info(), 1);
+        assert_eq!(db.fill_file_info(), 0, "없는 파일은 다시 읽지 않는다");
+        assert!(db.reuse(&copy));
+        assert_eq!(db.faces_of(&["/다른 곳/a.jpg".into()]).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_suffixes_count_as_the_same_name() {
+        for (a, b) in [
+            ("/x/IMG_1.jpg", "/y/IMG_1 (2).jpg"),
+            ("/x/IMG_1.jpg", "/y/img_1 copy.JPG"),
+            ("/x/사진.jpg", "/y/사진 - 복사본.jpg"),
+            ("/x/사진.jpg", "/y/사진 - Copy (3).jpg"),
+            ("/x/사진.jpg", "/y/사진 2.jpg"),
+        ] {
+            assert!(same_photo_name(a, b), "{a} {b}");
+        }
+        for (a, b) in [("/x/IMG_1.jpg", "/y/IMG_1.png"), ("/x/IMG_1234.jpg", "/y/IMG_1235.jpg"), ("/x/a.jpg", "/y/b.jpg")] {
+            assert!(!same_photo_name(a, b), "{a} {b}");
+        }
+    }
+
+    #[test]
+    fn excluded_people_leave_the_list_and_catch_look_alikes() {
+        let db = FaceDb::open(None).unwrap();
+        let e = |x: f32| {
+            let v = [1.0, x, 0.0, 0.0];
+            let n = v.iter().map(|a| a * a).sum::<f32>().sqrt();
+            v.map(|a| a / n).to_vec()
+        };
+        for (i, x) in [0.0, 0.02, 0.04].iter().enumerate() {
+            let r = Req { path: format!("/p/{i}.jpg"), size: 1, mtime: 1, index: 0 };
+            let f = Face { rect: [0.1, 0.1, 0.2, 0.2], marks: [[0.0; 2]; 5], score: 0.9 };
+            db.put(&r, &[Analyzed { face: f, px: 80.0, emb: e(*x), quality: 1.0, crop: None, turn: None }]);
+        }
+        let paths: Vec<String> = (0..3).map(|i| format!("/p/{i}.jpg")).collect();
+        let report = |db: &FaceDb| {
+            let mut r = group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), 3, 3, &Options::default());
+            set_aside(&mut r, &db.excluded_people());
+            r
+        };
+        let r = report(&db);
+        assert_eq!((r.groups.len(), r.excluded.len()), (1, 0));
+        // 두 얼굴을 제외하면, 같은 사람의 남은 얼굴도 자동으로 제외 쪽으로 간다
+        let ids: Vec<i64> = r.groups[0].faces.iter().map(|f| f.id).take(2).collect();
+        let hidden = db.exclude(&ids).unwrap();
+        let r = report(&db);
+        assert!(r.groups.is_empty(), "인물 목록에서 빠짐: {:?}", r.groups);
+        assert_eq!(r.excluded.len(), 1);
+        assert_eq!(r.excluded[0].faces.len(), 3);
+        // 이름 붙은 사람과 겹치지 않는다
+        assert!(db.people().iter().any(|p| p.0 == hidden && p.1.is_empty()));
+        // 모두 제외 취소하면 다시 이름 없는 인물로 돌아오고, 숨은 사람은 지워진다
+        let back: Vec<(i64, i64)> = r.excluded[0].faces.iter().map(|f| (f.id, hidden)).collect();
+        db.unexclude(&back).unwrap();
+        let r = report(&db);
+        assert_eq!((r.groups.len(), r.excluded.len()), (1, 0));
+        assert!(db.excluded_people().is_empty());
+        assert!(r.groups[0].faces.iter().all(|f| f.not_person.is_none()));
     }
 
     #[test]

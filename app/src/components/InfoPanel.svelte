@@ -95,10 +95,10 @@
         <dt>위치</dt>
         <dd>☁ 클라우드에만 있음 (열면 내려받음)</dd>
       {/if}
-      {#if info?.gps}
+      {#if Number.isFinite(info?.gps?.[0]) && Number.isFinite(info?.gps?.[1])}
         <dt>위치</dt>
-        <!-- 사진을 넘기는 순간 info가 먼저 비워질 수 있어 ?.로 읽는다 -->
-        <dd>{info?.gps?.[0].toFixed(5)}, {info?.gps?.[1].toFixed(5)}</dd>
+        <!-- 사진을 넘기는 순간 info가 먼저 비워질 수 있어 ?.로 읽는다 (값이 없으면 빈칸) -->
+        <dd>{info?.gps?.[0]?.toFixed(5) ?? ""}, {info?.gps?.[1]?.toFixed(5) ?? ""}</dd>
       {/if}
     </dl>
   {:else}

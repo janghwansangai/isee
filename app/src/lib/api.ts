@@ -121,6 +121,8 @@ export interface PeopleReport {
   groups: PersonGroup[];
   /** 미분류: 묶지 못한 얼굴 (같은 사람을 못 찾음, 옆모습이라 뺌) */
   unsorted: FaceRow[];
+  /** 제외한 인물 (주변 사람). 숨은 사람마다 한 묶음 */
+  excluded: PersonGroup[];
   singles: number;
   /** 미분류 가운데 옆모습이라 뺀 얼굴 */
   turned: number;
@@ -485,8 +487,23 @@ export const api = {
   facesApart: (faces: number[], others: number[]) => invoke("faces_apart", { faces, others }),
   facesDeletePerson: (person: number) => invoke("faces_delete_person", { person }),
   facesClear: () => invoke("faces_clear"),
-  facesOrganize: (sc: Scope, root: string, mode: "copy" | "main", peopleIds: number[]) =>
-    invoke<OrganizeReport>("faces_organize", { folder: sc.path, recursive: sc.recursive, root, mode, peopleIds, extra: sc.extra }),
+  /** 같은 이름 폴더가 있을 때(복사): "overwrite" 그 폴더에 넣고 같은 이름 파일은 바꿈, "rename" 새 이름 폴더 */
+  facesOrganize: (sc: Scope, root: string, mode: "copy" | "main", peopleIds: number[], existing?: "overwrite" | "rename") =>
+    invoke<OrganizeReport>("faces_organize", {
+      folder: sc.path,
+      recursive: sc.recursive,
+      root,
+      mode,
+      peopleIds,
+      existing: existing ?? null,
+      extra: sc.extra,
+    }),
+  /** 제외: 묶음마다(주변 사람 한 명씩) 인물 목록에서 뺀다 */
+  facesExclude: (groups: number[][]) => invoke("faces_exclude", { groups }),
+  /** 제외 취소: [얼굴, 그 얼굴이 있던 제외 묶음의 사람 번호] */
+  facesUnexclude: (faces: [number, number][]) => invoke("faces_unexclude", { faces }),
+  /** 이 이름들 가운데 root 안에 이미 폴더가 있는 것 */
+  facesExistingFolders: (root: string, names: string[]) => invoke<string[]>("faces_existing_folders", { root, names }),
   shellIntegration: (install?: boolean) =>
     invoke<{ installed: boolean; count: number }>("shell_integration", { install: install ?? null }),
 };

@@ -21,29 +21,50 @@
   let report = $state.raw<PeopleReport | null>(null);
   /** 고른 묶음 (사람 번호 또는 "u:대표 얼굴") */
   let selKey = $state<string | null>(null);
+  /** 다시 불러온 뒤 보여 줄 묶음 (제외한 다음 묶음으로 넘어가기) */
+  let nextKey: string | null = null;
   const picked = new SvelteSet<number>();
   let nameInput = $state("");
   let working = $state(false);
 
-  /** 목록의 한 줄: 사람 묶음, 또는 맨 끝의 "미분류" (묶지 못한 얼굴) */
-  type ListGroup = PersonGroup & { unsorted?: true };
+  /** 목록의 한 줄: 사람 묶음, 또는 맨 끝의 "미분류"(묶지 못한 얼굴)와 "제외한 인물"(주변 사람) */
+  type ListGroup = PersonGroup & { unsorted?: true; excluded?: true };
   const UNSORTED = "x:unsorted";
-  const keyOf = (g: ListGroup) => (g.unsorted ? UNSORTED : g.person != null ? `p:${g.person}` : `u:${g.cover}`);
+  const EXCLUDED = "x:excluded";
+  const keyOf = (g: ListGroup) =>
+    g.unsorted ? UNSORTED : g.excluded ? EXCLUDED : g.person != null ? `p:${g.person}` : `u:${g.cover}`;
+  /** 이름 없는 인물 묶음 (제외할 수 있는 것) */
+  const isUnnamed = (g: ListGroup | null) => !!g && g.person == null && !g.unsorted && !g.excluded;
   let groups = $derived.by((): ListGroup[] => {
     const r = report;
     if (!r) return [];
-    if (!r.unsorted.length) return r.groups;
-    const photos = new Set(r.unsorted.map((f) => f.path)).size;
-    return [...r.groups, { person: null, name: null, faces: r.unsorted, cover: r.unsorted[0].id, photos, auto: 0, unsorted: true }];
+    const out: ListGroup[] = [...r.groups];
+    if (r.unsorted.length) {
+      const photos = new Set(r.unsorted.map((f) => f.path)).size;
+      out.push({ person: null, name: null, faces: r.unsorted, cover: r.unsorted[0].id, photos, auto: 0, unsorted: true });
+    }
+    if (r.excluded.length) {
+      const faces = r.excluded.flatMap((g) => g.faces);
+      const photos = new Set(faces.map((f) => f.path)).size;
+      out.push({ person: null, name: null, faces, cover: r.excluded[0].cover, photos, auto: 0, excluded: true });
+    }
+    return out;
   });
+  /** 제외한 얼굴 → 그 얼굴이 들어 있는 제외 묶음(숨은 사람) 번호 (되돌릴 때) */
+  let excludedOwner = $derived(new Map((report?.excluded ?? []).flatMap((g) => g.faces.map((f) => [f.id, g.person!] as const))));
   let unnamedNo = $derived.by(() => {
     const m = new Map<string, number>();
     let n = 0;
     for (const g of report?.groups ?? []) if (g.person == null) m.set(keyOf(g), ++n);
     return m;
   });
-  const title = (g: ListGroup) => (g.unsorted ? "미분류" : (g.name ?? `이름 없는 인물 ${unnamedNo.get(keyOf(g)) ?? ""}`));
+  const title = (g: ListGroup) =>
+    g.unsorted ? "미분류" : g.excluded ? "제외한 인물" : (g.name ?? `이름 없는 인물 ${unnamedNo.get(keyOf(g)) ?? ""}`);
   let sel = $derived(groups.find((g) => keyOf(g) === selKey) ?? null);
+  /** ⌘(Ctrl)·Shift-클릭으로 여러 개 고른 이름 없는 인물 (2명 이상일 때 한꺼번에 제외) */
+  const checked = new SvelteSet<string>();
+  let anchorKey: string | null = null;
+  let multi = $derived(checked.size >= 2 ? groups.filter((g) => checked.has(keyOf(g))) : []);
   let named = $derived((report?.groups ?? []).filter((g) => g.person != null));
   let analyzing = $derived(progress[1] > 0 && progress[0] < progress[1]);
 
@@ -90,6 +111,7 @@
     untrack(() => {
       nameInput = g?.name ?? "";
       picked.clear();
+      lastPick = -1;
     });
   });
 
@@ -111,8 +133,11 @@
       const r = await api.facesReport(scope);
       report = r;
       lastAt = performance.now();
-      const keys = [...r.groups.map(keyOf), ...(r.unsorted.length ? [UNSORTED] : [])];
+      const keys = [...r.groups.map(keyOf), ...(r.unsorted.length ? [UNSORTED] : []), ...(r.excluded.length ? [EXCLUDED] : [])];
+      if (nextKey && keys.includes(nextKey)) selKey = nextKey;
+      nextKey = null;
       if (!selKey || !keys.includes(selKey)) selKey = keys[0] ?? null;
+      for (const k of [...checked]) if (!keys.includes(k)) checked.delete(k);
     } catch (e) {
       store.showToast(`인물을 불러오지 못했습니다: ${e}`, { error: true });
     }
@@ -281,6 +306,92 @@
     if (left) selKey = keyOf(left);
   }
 
+  // ───── 제외 (주변 사람) ─────
+  /** 목록 클릭: 그냥 누르면 그 묶음을 보고, ⌘(Ctrl)·Shift를 누른 채면 이름 없는 인물을 여러 명 고른다 */
+  function clickGroup(g: ListGroup, e: MouseEvent) {
+    const k = keyOf(g);
+    if ((e.metaKey || e.ctrlKey) && isUnnamed(g)) {
+      if (!checked.size && isUnnamed(sel)) checked.add(keyOf(sel!));
+      if (checked.has(k)) checked.delete(k);
+      else checked.add(k);
+      anchorKey = k;
+      if (checked.size === 1) {
+        selKey = [...checked][0];
+        checked.clear();
+      }
+      return;
+    }
+    if (e.shiftKey && isUnnamed(g)) {
+      const from = groups.findIndex((x) => keyOf(x) === (anchorKey ?? selKey));
+      const to = groups.findIndex((x) => keyOf(x) === k);
+      checked.clear();
+      if (from >= 0) {
+        for (let j = Math.min(from, to); j <= Math.max(from, to); j++) if (isUnnamed(groups[j])) checked.add(keyOf(groups[j]));
+      }
+      if (checked.size < 2) {
+        checked.clear();
+        selKey = k;
+      }
+      return;
+    }
+    checked.clear();
+    anchorKey = k;
+    selKey = k;
+  }
+
+  /** 이 묶음 다음에 보여 줄 묶음 (제외해서 목록에서 빠지므로) */
+  function keyAfter(keys: Set<string>): string | null {
+    const i = groups.findIndex((g) => keys.has(keyOf(g)));
+    const rest = groups.slice(i + 1).find((g) => !keys.has(keyOf(g)) && !g.excluded);
+    return rest ? keyOf(rest) : null;
+  }
+
+  /** 고른 이름 없는 인물들을 한꺼번에 제외 */
+  function excludeChecked() {
+    const list = multi.filter(isUnnamed);
+    if (!list.length) return;
+    const keys = new Set(list.map(keyOf));
+    act(async () => {
+      await api.facesExclude(list.map((g) => g.faces.map((f) => f.id)));
+      nextKey = keyAfter(keys);
+      checked.clear();
+      store.showToast(`${list.length}명을 제외했습니다 (목록 맨 아래 "제외한 인물"에서 되돌릴 수 있습니다)`);
+    });
+  }
+
+  /** 지금 묶음(이름 없는 인물)을 통째로, 또는 고른 얼굴만 제외. 미분류는 고른 얼굴만. */
+  function excludeSel() {
+    const g = sel;
+    if (!g || g.person != null || g.excluded || (g.unsorted && !picked.size)) return;
+    const whole = !picked.size;
+    const ids = whole ? g.faces.map((f) => f.id) : [...picked];
+    act(async () => {
+      await api.facesExclude([ids]);
+      if (whole) nextKey = keyAfter(new Set([keyOf(g)]));
+      picked.clear();
+      store.showToast(whole ? "이 인물을 제외했습니다" : `얼굴 ${ids.length}개를 제외했습니다`);
+    });
+  }
+
+  /** 제외 취소: 고른 얼굴(없으면 전부)을 다시 인물 목록으로 */
+  async function unexclude() {
+    const g = sel;
+    if (!g?.excluded) return;
+    const ids = picked.size ? [...picked] : g.faces.map((f) => f.id);
+    if (!picked.size) {
+      const ok = await ask(`제외한 얼굴 ${ids.length}개를 모두 다시 인물 목록으로 되돌릴까요?`, {
+        title: "제외 취소",
+        okLabel: "모두 되돌리기",
+        cancelLabel: "취소",
+      });
+      if (!ok) return;
+    }
+    act(async () => {
+      await api.facesUnexclude(ids.flatMap((id) => (excludedOwner.has(id) ? [[id, excludedOwner.get(id)!] as [number, number]] : [])));
+      picked.clear();
+    });
+  }
+
   /** 자동으로 들어온 얼굴을 모두 "맞음"으로 확인 */
   function confirmAuto() {
     const g = sel;
@@ -313,27 +424,16 @@
   }
 
   // ───── 인물별 폴더 ─────
-  async function organize(mode: "copy" | "main") {
-    if (!named.length) {
-      store.showToast("먼저 인물에 이름을 붙여 주세요 (이름이 폴더 이름이 됩니다)");
-      return;
-    }
-    const msg =
-      mode === "copy"
-        ? `이름 붙은 인물 ${named.length}명의 사진을 "${baseName(folder)}" 안 인물별 폴더로 복사합니다. 여러 사람이 나온 사진은 사람 수만큼 복사됩니다.`
-        : `사진을 가장 크게 나온 인물의 폴더로 옮깁니다. 비슷한 크기로 여러 명이 나온 사진은 "단체 사진" 폴더로 갑니다.`;
-    const ok = await ask(`${msg}\n${isMac ? "⌘Z" : "Ctrl+Z"}로 한 번에 되돌릴 수 있습니다.`, {
-      title: mode === "copy" ? "인물별 폴더로 복사" : "주인공 기준 이동",
-      okLabel: mode === "copy" ? "복사" : "이동",
-      cancelLabel: "취소",
-    });
-    if (!ok) return;
+  const UNDO_KEY = isMac ? "⌘Z" : "Ctrl+Z";
+
+  async function organize(mode: "copy" | "main", ids: number[], existing?: "overwrite" | "rename") {
     working = true;
     try {
-      const r = await api.facesOrganize(scope, folder, mode, []);
+      const r = await api.facesOrganize(scope, folder, mode, ids, existing);
       let m = `${r.files}개를 ${mode === "copy" ? "복사" : "옮겼"}했습니다 · 새 폴더 ${r.folders}개`;
+      if (r.unchanged) m += ` · 이미 있는 사진 ${r.unchanged}개는 건너뜀`;
       if (r.failed.length) m += ` · ${r.failed.length}개 실패`;
-      store.showToast(m, { undo: r.files > 0, error: r.failed.length > 0 });
+      store.showToast(m, { undo: r.files > 0 || r.folders > 0, error: r.failed.length > 0 });
       await store.reload();
       await refresh();
     } catch (e) {
@@ -341,6 +441,67 @@
     } finally {
       working = false;
     }
+  }
+
+  /** 주인공 기준 이동: 사진마다 가장 크게 나온 (이름 붙은) 인물의 폴더로 원본을 옮긴다 */
+  async function organizeMain() {
+    if (!named.length) {
+      store.showToast("먼저 인물에 이름을 붙여 주세요 (이름이 폴더 이름이 됩니다)");
+      return;
+    }
+    const ok = await ask(
+      `사진마다 가장 크게 나온 인물의 폴더로 사진을 옮깁니다 (복사가 아니라 원래 파일을 옮깁니다).\n` +
+        `· 비슷한 크기로 이름 붙은 인물이 여럿 나온 사진은 "단체 사진" 폴더로\n` +
+        `· 가장 크게 나온 사람이 이름 없는 인물이거나 제외한 인물이면 그대로 둡니다\n` +
+        `${UNDO_KEY}로 한 번에 되돌릴 수 있습니다.`,
+      { title: "주인공 기준 이동", okLabel: "이동", cancelLabel: "취소" },
+    );
+    if (ok) await organize("main", []);
+  }
+
+  /** 인물별 폴더로 복사: 인물 고르기 → (같은 이름 폴더가 있으면) 덮어쓰기·새 이름 묻기 */
+  let copyOpen = $state(false);
+  const copyIds = new SvelteSet<number>();
+  /** root 안에 이미 폴더가 있는 인물 이름 */
+  let existingNames = $state<Set<string>>(new Set());
+  /** 2단계: 이미 있는 폴더 이름들 (덮어쓸지 새 이름으로 할지 묻는 중) */
+  let clash = $state<string[] | null>(null);
+  let copyPhotos = $derived(named.filter((g) => copyIds.has(g.person!)).reduce((n, g) => n + g.photos, 0));
+
+  async function openCopy() {
+    if (!named.length) {
+      store.showToast("먼저 인물에 이름을 붙여 주세요 (이름이 폴더 이름이 됩니다)");
+      return;
+    }
+    copyIds.clear();
+    for (const g of named) copyIds.add(g.person!);
+    clash = null;
+    existingNames = new Set();
+    copyOpen = true;
+    try {
+      existingNames = new Set(await api.facesExistingFolders(folder, named.map((g) => g.name!)));
+    } catch {
+      // 확인하지 못하면 복사할 때 다시 확인한다
+    }
+  }
+
+  async function startCopy() {
+    const chosen = named.filter((g) => copyIds.has(g.person!));
+    if (!chosen.length) return;
+    const found = await api.facesExistingFolders(folder, chosen.map((g) => g.name!)).catch(() => [] as string[]);
+    if (found.length) {
+      clash = found;
+      return;
+    }
+    copyOpen = false;
+    await organize("copy", chosen.map((g) => g.person!));
+  }
+
+  async function finishCopy(existing: "overwrite" | "rename") {
+    const ids = named.filter((g) => copyIds.has(g.person!)).map((g) => g.person!);
+    copyOpen = false;
+    clash = null;
+    await organize("copy", ids, existing);
   }
 
   /** 지금 폴더에 있는 사진이면 뷰어로 크게 */
@@ -352,9 +513,99 @@
     }
   }
 
-  function togglePick(id: number) {
-    if (picked.has(id)) picked.delete(id);
+  // ───── 얼굴 고르기: 클릭(넣고 빼기)·Shift-클릭(사이 전부)·끌어서 상자로 ─────
+  /** 마지막으로 누른 얼굴의 자리 (Shift-클릭 범위의 시작) */
+  let lastPick = -1;
+  /** 방금 상자로 골랐다 (이어지는 클릭은 무시) */
+  let dragged = false;
+
+  function clickFace(i: number, id: number, e: MouseEvent) {
+    if (dragged) {
+      dragged = false;
+      return;
+    }
+    const faces = sel?.faces ?? [];
+    if (e.shiftKey && lastPick >= 0 && lastPick < faces.length) {
+      for (let j = Math.min(lastPick, i); j <= Math.max(lastPick, i); j++) picked.add(faces[j].id);
+    } else if (picked.has(id)) picked.delete(id);
     else picked.add(id);
+    lastPick = i;
+  }
+
+  /** 끌어서 고르기 상자 (얼굴 목록 안의 좌표) */
+  let band = $state<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  let bandFrom: { x: number; y: number; base: number[] } | null = null;
+  let bandPointer = { x: 0, y: 0 };
+  let bandRaf = 0;
+
+  function facePoint(cx: number, cy: number) {
+    const r = faceScroll!.getBoundingClientRect();
+    return { x: cx - r.left, y: cy - r.top + faceScroll!.scrollTop };
+  }
+
+  function bandDown(e: PointerEvent) {
+    dragged = false;
+    if (e.button !== 0 || !faceScroll || !sel) return;
+    // 스크롤 막대를 잡은 것은 빼고
+    if (e.clientX - faceScroll.getBoundingClientRect().left > faceScroll.clientWidth) return;
+    const p = facePoint(e.clientX, e.clientY);
+    bandFrom = { ...p, base: [...picked] };
+    bandPointer = { x: e.clientX, y: e.clientY };
+  }
+
+  function bandMove(e: PointerEvent) {
+    if (!bandFrom || !faceScroll) return;
+    bandPointer = { x: e.clientX, y: e.clientY };
+    const p = facePoint(e.clientX, e.clientY);
+    if (!band) {
+      if (Math.hypot(p.x - bandFrom.x, p.y - bandFrom.y) < 6) return;
+      faceScroll.setPointerCapture(e.pointerId);
+      bandRaf = requestAnimationFrame(bandScroll);
+    }
+    band = { x0: bandFrom.x, y0: bandFrom.y, x1: p.x, y1: p.y };
+    applyBand();
+  }
+
+  /** 상자에 닿은 얼굴을 고른다 (끌기 전에 고른 것은 그대로) */
+  function applyBand() {
+    const b = band;
+    const faces = sel?.faces ?? [];
+    if (!b || !bandFrom) return;
+    const [x0, x1] = [Math.min(b.x0, b.x1), Math.max(b.x0, b.x1)];
+    const [y0, y1] = [Math.max(0, Math.min(b.y0, b.y1)), Math.max(b.y0, b.y1)];
+    picked.clear();
+    for (const id of bandFrom.base) picked.add(id);
+    const lastRow = Math.ceil(faces.length / cols) - 1;
+    for (let r = Math.floor(y0 / ROW_H); r <= Math.min(lastRow, Math.floor(y1 / ROW_H)); r++) {
+      if (y1 < r * ROW_H || y0 > r * ROW_H + FACE_H) continue;
+      for (let c = 0; c < cols; c++) {
+        const left = c * (FACE_W + GAP);
+        const i = r * cols + c;
+        if (i < faces.length && x1 >= left && x0 <= left + FACE_W) picked.add(faces[i].id);
+      }
+    }
+  }
+
+  /** 끄는 동안 위아래 끝에 가까우면 스크롤 */
+  function bandScroll() {
+    if (!band || !faceScroll) return;
+    const r = faceScroll.getBoundingClientRect();
+    const dy = bandPointer.y < r.top + 36 ? -14 : bandPointer.y > r.bottom - 36 ? 14 : 0;
+    if (dy) {
+      faceScroll.scrollTop += dy;
+      const p = facePoint(bandPointer.x, bandPointer.y);
+      band = { ...band, x1: p.x, y1: p.y };
+      applyBand();
+    }
+    bandRaf = requestAnimationFrame(bandScroll);
+  }
+
+  function bandUp(e: PointerEvent) {
+    if (band) dragged = true;
+    band = null;
+    bandFrom = null;
+    cancelAnimationFrame(bandRaf);
+    if (faceScroll?.hasPointerCapture(e.pointerId)) faceScroll.releasePointerCapture(e.pointerId);
   }
 
   export function close() {
@@ -363,7 +614,11 @@
 
   export function onKey(e: KeyboardEvent): boolean {
     if (e.key === "Escape") {
-      if (picked.size) picked.clear();
+      if (copyOpen) {
+        copyOpen = false;
+        clash = null;
+      } else if (checked.size) checked.clear();
+      else if (picked.size) picked.clear();
       else close();
       return true;
     }
@@ -471,20 +726,28 @@
             <button
               class="person"
               class:unsorted={g.unsorted}
+              class:excluded={g.excluded}
               style="top:{i * ITEM_H}px"
-              class:on={keyOf(g) === selKey}
-              onclick={() => (selKey = keyOf(g))}
+              class:on={checked.size ? checked.has(keyOf(g)) : keyOf(g) === selKey}
+              onclick={(e) => clickGroup(g, e)}
             >
               <img src={faceUrl(g.cover)} alt="" />
               <span class="info">
                 <span class="name" class:unnamed={!g.name}>{title(g)}</span>
                 <span class="count">
-                  {g.unsorted ? `얼굴 ${g.faces.length}개 · 골라서 이름 붙이기` : `사진 ${g.photos}장${g.auto ? ` · 확인 필요 ${g.auto}` : ""}`}
+                  {g.unsorted
+                    ? `얼굴 ${g.faces.length}개 · 골라서 이름 붙이기`
+                    : g.excluded
+                      ? `${report?.excluded.length ?? 0}명 · 얼굴 ${g.faces.length}개`
+                      : `사진 ${g.photos}장${g.auto ? ` · 확인 필요 ${g.auto}` : ""}`}
                 </span>
               </span>
             </button>
           {/each}
         </div>
+        {#if (report?.groups ?? []).some((g) => g.person == null)}
+          <p class="note">{isMac ? "⌘" : "Ctrl"}·Shift를 누른 채 클릭하면 이름 없는 인물을 여러 명 골라 한꺼번에 제외할 수 있습니다.</p>
+        {/if}
         {#if report?.small}
           <p class="note">너무 작은 얼굴 {report.small}개는 묶지 않았습니다.</p>
         {/if}
@@ -494,60 +757,107 @@
       </aside>
 
       <section class="detail">
-        {#if sel}
+        {#if multi.length}
           <div class="head">
-            <input
-              class="name-input"
-              type="text"
-              placeholder="이름 (예: 엄마, 민준)"
-              bind:value={nameInput}
-              onkeydown={(e) => e.key === "Enter" && !e.isComposing && saveName()}
-            />
-            <button
-              class="btn primary"
-              disabled={!nameInput.trim() || nameInput.trim() === sel.name || working || (sel.unsorted && !picked.size)}
-              onclick={saveName}
-            >
-              {sel.person != null ? "이름 바꾸기" : picked.size ? `고른 ${picked.size}개에 이름 붙이기` : "이름 붙이기"}
-            </button>
-            {#if named.some((n) => n.person !== sel!.person)}
-              <select
-                disabled={working || (sel.unsorted && !picked.size)}
-                onchange={(e) => {
-                  const v = Number(e.currentTarget.value);
-                  e.currentTarget.value = "";
-                  if (v) mergeInto(v);
-                }}
-              >
-                <option value="">{picked.size ? `고른 ${picked.size}개를 다른 인물로…` : "다른 인물과 합치기…"}</option>
-                {#each named.filter((n) => n.person !== sel!.person) as n (n.person)}
-                  <option value={n.person}>{n.name}</option>
-                {/each}
-              </select>
-            {/if}
+            <span class="multi-title">이름 없는 인물 {multi.length}명을 골랐습니다 · 사진 {multi.reduce((n, g) => n + g.photos, 0)}장</span>
             <span class="spacer"></span>
-            {#if sel.person != null}
-              {#if sel.auto}<button class="btn" disabled={working} onclick={confirmAuto}>자동 {sel.auto}개 모두 맞음</button>{/if}
-              <button class="btn danger" disabled={!picked.size || working} onclick={rejectPicked}>
-                고른 {picked.size}개 "이 사람 아님"
+            <button class="btn" disabled={working} onclick={() => checked.clear()}>고르기 취소</button>
+            <button class="btn danger" disabled={working} onclick={excludeChecked}>고른 {multi.length}명 제외</button>
+          </div>
+          <p class="hint">
+            필요 없는 사람(주변에 찍힌 사람 등)을 제외하면 인물 목록과 인물별 폴더 정리에서 빠지고, 같은 사람의 얼굴은 다음에도 저절로 제외됩니다.
+            제외한 인물은 목록 맨 아래 "제외한 인물"에서 언제든 되돌릴 수 있습니다.
+          </p>
+          <div class="scroller">
+            <div class="covers">
+              {#each multi.slice(0, 300) as g (keyOf(g))}
+                <div class="cover" title={title(g)}>
+                  <img src={faceUrl(g.cover)} alt="" />
+                  <span class="fname">{title(g)} · {g.photos}장</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {:else if sel}
+          <div class="head">
+            {#if sel.excluded}
+              <span class="multi-title">제외한 인물 {report?.excluded.length ?? 0}명 · 얼굴 {sel.faces.length}개</span>
+              <span class="spacer"></span>
+              <button class="btn" disabled={working} onclick={unexclude}>
+                {picked.size ? `고른 ${picked.size}개 제외 취소` : "모두 제외 취소"}
               </button>
-              <button class="btn subtle" disabled={working} onclick={deletePerson}>이름 지우기</button>
-            {:else if !sel.unsorted}
+            {:else}
+              <input
+                class="name-input"
+                type="text"
+                placeholder="이름 (예: 엄마, 민준)"
+                bind:value={nameInput}
+                onkeydown={(e) => e.key === "Enter" && !e.isComposing && saveName()}
+              />
               <button
-                class="btn danger"
-                disabled={!picked.size || picked.size >= sel.faces.length || working}
-                onclick={splitPicked}
-                title="고른 얼굴을 이 묶음에서 빼고, 다시 같은 사람으로 묶지 않습니다"
+                class="btn primary"
+                disabled={!nameInput.trim() || nameInput.trim() === sel.name || working || (sel.unsorted && !picked.size)}
+                onclick={saveName}
               >
-                고른 {picked.size}개 빼기
+                {sel.person != null ? "이름 바꾸기" : picked.size ? `고른 ${picked.size}개에 이름 붙이기` : "이름 붙이기"}
               </button>
+              {#if named.some((n) => n.person !== sel!.person)}
+                <select
+                  disabled={working || (sel.unsorted && !picked.size)}
+                  onchange={(e) => {
+                    const v = Number(e.currentTarget.value);
+                    e.currentTarget.value = "";
+                    if (v) mergeInto(v);
+                  }}
+                >
+                  <option value="">{picked.size ? `고른 ${picked.size}개를 다른 인물로…` : "다른 인물과 합치기…"}</option>
+                  {#each named.filter((n) => n.person !== sel!.person) as n (n.person)}
+                    <option value={n.person}>{n.name}</option>
+                  {/each}
+                </select>
+              {/if}
+              <span class="spacer"></span>
+              {#if sel.person != null}
+                {#if sel.auto}<button class="btn" disabled={working} onclick={confirmAuto}>자동 {sel.auto}개 모두 맞음</button>{/if}
+                <button class="btn danger" disabled={!picked.size || working} onclick={rejectPicked}>
+                  고른 {picked.size}개 "이 사람 아님"
+                </button>
+                <button class="btn subtle" disabled={working} onclick={deletePerson}>이름 지우기</button>
+              {:else if sel.unsorted}
+                <button
+                  class="btn danger"
+                  disabled={!picked.size || working}
+                  onclick={excludeSel}
+                  title="고른 얼굴을 제외한 인물로 보냅니다 (인물 목록·인물별 폴더 정리에서 빠짐)"
+                >
+                  고른 {picked.size}개 제외
+                </button>
+              {:else}
+                <button
+                  class="btn danger"
+                  disabled={!picked.size || picked.size >= sel.faces.length || working}
+                  onclick={splitPicked}
+                  title="고른 얼굴을 이 묶음에서 빼고, 다시 같은 사람으로 묶지 않습니다"
+                >
+                  고른 {picked.size}개 빼기
+                </button>
+                <button
+                  class="btn danger"
+                  disabled={working}
+                  onclick={excludeSel}
+                  title="필요 없는 사람(주변 사람 등)을 인물 목록과 인물별 폴더 정리에서 뺍니다. 같은 사람 얼굴은 다음에도 저절로 제외됩니다."
+                >
+                  {picked.size ? `고른 ${picked.size}개 제외` : "이 인물 제외"}
+                </button>
+              {/if}
             {/if}
           </div>
           <p class="hint">
-            얼굴을 클릭해 고르고, 두 번 클릭하면 사진을 크게 봅니다.
-            {#if sel.person != null}노란 테두리는 자동으로 넣은 얼굴입니다 (맞으면 "모두 맞음", 틀리면 골라서 "이 사람 아님").
+            얼굴을 클릭해 고르고(Shift-클릭은 사이 전부, 끌면 상자 안 전부), 두 번 클릭하면 사진을 크게 봅니다.
+            {#if sel.excluded}제외한 인물의 얼굴입니다. 인물 목록과 인물별 폴더 정리에서 빠지고, 같은 사람의 얼굴은 다음에도 여기로 옵니다. 잘못 뺀 얼굴은 골라서 "제외 취소"를 누르세요.
+            {:else if sel.person != null}노란 테두리는 자동으로 넣은 얼굴입니다 (맞으면 "모두 맞음", 틀리면 골라서 "이 사람 아님").
             {:else if sel.unsorted}같은 사람을 찾지 못했거나{report?.turned ? `, 옆모습이라 뺀(${report.turned}개)` : ""} 얼굴입니다. 같은 사람 얼굴을 골라 이름을 붙이거나 다른 인물로 보내세요.
-            {:else}같은 사람으로 묶었지만 아직 이름이 없습니다. 다른 사람 얼굴이 섞여 있으면 골라서 "빼기"를 누르세요. 맞는 얼굴만 골라 이름을 붙여도 됩니다.{/if}
+            {:else}같은 사람으로 묶었지만 아직 이름이 없습니다. 필요 없는 사람이면 "이 인물 제외", 다른 사람 얼굴이 섞여 있으면 골라서 "빼기"를 누르세요.{/if}
           </p>
           <div
             class="scroller"
@@ -555,6 +865,13 @@
             bind:clientHeight={faceH}
             bind:clientWidth={faceW}
             onscroll={(e) => (faceY = e.currentTarget.scrollTop)}
+            role="listbox"
+            tabindex="-1"
+            aria-multiselectable="true"
+            onpointerdown={bandDown}
+            onpointermove={bandMove}
+            onpointerup={bandUp}
+            onpointercancel={bandUp}
           >
             <div class="faces" style="height:{Math.ceil(sel.faces.length / cols) * ROW_H}px">
               {#each shownFaces as { f, i } (f.id)}
@@ -564,24 +881,102 @@
                   class:picked={picked.has(f.id)}
                   class:auto={sel.person != null && f.person == null}
                   title={baseName(f.path)}
-                  onclick={() => togglePick(f.id)}
+                  onclick={(e) => clickFace(i, f.id, e)}
                   ondblclick={() => openPhoto(f.path)}
                 >
-                  <img src={faceUrl(f.id)} alt="" />
+                  <img src={faceUrl(f.id)} alt="" draggable="false" />
                   <span class="fname">{baseName(f.path)}</span>
                 </button>
               {/each}
+              {#if band}
+                <div
+                  class="band"
+                  style="left:{Math.min(band.x0, band.x1)}px; top:{Math.min(band.y0, band.y1)}px; width:{Math.abs(band.x1 - band.x0)}px; height:{Math.abs(band.y1 - band.y0)}px"
+                ></div>
+              {/if}
             </div>
           </div>
         {/if}
       </section>
     </div>
     <div class="actions">
-      <span class="dim small">인물별 폴더로 정리 (이름 붙은 인물만, {isMac ? "⌘Z" : "Ctrl+Z"}로 되돌림)</span>
+      <span class="dim small">인물별 폴더로 정리 (이름 붙은 인물만, {UNDO_KEY}로 되돌림)</span>
       <span class="spacer"></span>
-      <button class="btn" disabled={working || !named.length} onclick={() => organize("copy")}>인물별 폴더로 복사</button>
-      <button class="btn" disabled={working || !named.length} onclick={() => organize("main")}>주인공 기준 이동</button>
+      <button
+        class="btn"
+        disabled={working || !named.length}
+        onclick={openCopy}
+        title="고른 인물마다 폴더를 만들어 사진을 복사합니다 (원본은 그대로)"
+      >
+        인물별 폴더로 복사…
+      </button>
+      <button
+        class="btn"
+        disabled={working || !named.length}
+        onclick={organizeMain}
+        title="사진마다 가장 크게 나온 인물의 폴더로 원본을 옮깁니다. 여럿이 비슷한 크기로 나온 사진은 '단체 사진' 폴더로."
+      >
+        주인공 기준 이동…
+      </button>
     </div>
+    {#if copyOpen}
+      <div class="modal-back" role="presentation" onpointerdown={(e) => e.target === e.currentTarget && (copyOpen = false)}>
+        <div class="modal" role="dialog" aria-label="인물별 폴더로 복사">
+          {#if clash}
+            <h3>같은 이름의 폴더가 이미 있습니다</h3>
+            <p class="dim">"{baseName(folder)}" 안에 <b>{clash.join(", ")}</b> 폴더가 있습니다. 어떻게 할까요?</p>
+            <div class="choices">
+              <button class="choice" onclick={() => finishCopy("overwrite")}>
+                <b>덮어쓰기</b>
+                <span>있는 폴더에 넣습니다. 같은 사진은 건너뛰고, 이름만 같은 다른 파일은 새 사진으로 바꿉니다 (원래 파일은 휴지통으로).</span>
+              </button>
+              <button class="choice" onclick={() => finishCopy("rename")}>
+                <b>이름 바꾸기</b>
+                <span>"{clash[0]} (2)"처럼 새 이름의 폴더를 만들어 복사합니다. 있던 폴더는 그대로 둡니다.</span>
+              </button>
+            </div>
+            <div class="modal-actions">
+              <span class="dim small">{UNDO_KEY}로 한 번에 되돌릴 수 있습니다.</span>
+              <span class="spacer"></span>
+              <button class="btn" onclick={() => (clash = null)}>뒤로</button>
+              <button class="btn" onclick={() => ((copyOpen = false), (clash = null))}>취소</button>
+            </div>
+          {:else}
+            <h3>인물별 폴더로 복사</h3>
+            <p class="dim">
+              "{baseName(folder)}" 안에 고른 인물마다 폴더를 만들어 사진을 복사합니다. 여러 사람이 나온 사진은 사람 수만큼 복사되고, 원본은 그대로입니다.
+            </p>
+            <div class="pick-row">
+              <button class="link" onclick={() => named.forEach((g) => copyIds.add(g.person!))}>모두 고르기</button>
+              <button class="link" onclick={() => copyIds.clear()}>모두 빼기</button>
+              <span class="spacer"></span>
+              <span class="dim small">{copyIds.size}명 · 사진 {copyPhotos.toLocaleString()}장</span>
+            </div>
+            <div class="pick-list">
+              {#each named as g (g.person)}
+                <label class="pick">
+                  <input
+                    type="checkbox"
+                    checked={copyIds.has(g.person!)}
+                    onchange={(e) => (e.currentTarget.checked ? copyIds.add(g.person!) : copyIds.delete(g.person!))}
+                  />
+                  <img src={faceUrl(g.cover)} alt="" />
+                  <span class="pick-name">{g.name}</span>
+                  <span class="dim small">사진 {g.photos}장</span>
+                  {#if existingNames.has(g.name!)}<span class="tag" title="같은 이름의 폴더가 이미 있습니다">폴더 있음</span>{/if}
+                </label>
+              {/each}
+            </div>
+            <div class="modal-actions">
+              <span class="dim small">{UNDO_KEY}로 한 번에 되돌릴 수 있습니다.</span>
+              <span class="spacer"></span>
+              <button class="btn" onclick={() => (copyOpen = false)}>취소</button>
+              <button class="btn primary" disabled={!copyIds.size || working} onclick={startCopy}>{copyIds.size}명 복사</button>
+            </div>
+          {/if}
+        </div>
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -841,6 +1236,158 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .person.excluded .name {
+    color: var(--text-faint);
+    font-weight: 600;
+  }
+  .person.excluded img {
+    opacity: 0.55;
+  }
+  .multi-title {
+    font-weight: 600;
+  }
+  .covers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .cover {
+    width: 120px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px;
+  }
+  .cover img {
+    width: 108px;
+    height: 108px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: #111214;
+  }
+  .scroller {
+    user-select: none;
+  }
+  .band {
+    position: absolute;
+    z-index: 2;
+    border: 1px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    pointer-events: none;
+  }
+  .modal-back {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  .modal {
+    width: min(560px, calc(100vw - 32px));
+    max-height: calc(100vh - 80px);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 18px 20px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  }
+  .modal h3 {
+    margin: 0;
+    font-size: 16px;
+  }
+  .modal p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .pick-row,
+  .modal-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .modal-actions {
+    margin-top: 4px;
+  }
+  .link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .pick-list {
+    flex: 1;
+    min-height: 0;
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+  }
+  .pick {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .pick:hover {
+    background: var(--hover);
+  }
+  .pick img {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: #111214;
+  }
+  .pick-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tag {
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #3a3322;
+    color: #f0c674;
+    font-size: 11px;
+  }
+  .choices {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .choice {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    text-align: left;
+    font-size: 13px;
+  }
+  .choice:hover {
+    border-color: var(--accent);
+  }
+  .choice span {
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.5;
   }
   .banner {
     display: flex;

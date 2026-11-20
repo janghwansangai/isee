@@ -98,7 +98,9 @@ fn gps_coord(exif: &exif::Exif, tag: exif::Tag, ref_tag: exif::Tag) -> Option<f6
     if v.len() < 3 {
         return None;
     }
-    let deg = v[0].to_f64() + v[1].to_f64() / 60.0 + v[2].to_f64() / 3600.0;
+    // 위치를 못 잡은 휴대폰은 0/0을 적기도 한다 (NaN은 화면으로 보낼 때 null이 되어 정보 칸이 깨졌다)
+    let part = |i: usize| Some(v[i].to_f64()).filter(|x| x.is_finite());
+    let deg = part(0)? + part(1)? / 60.0 + part(2)? / 3600.0;
     let r = text(exif, ref_tag).unwrap_or_default();
     Some(if r.starts_with('S') || r.starts_with('W') { -deg } else { deg })
 }
@@ -130,7 +132,8 @@ fn fill_exif(info: &mut Info, exif: &exif::Exif) {
     if let (Some(lat), Some(lon)) = (
         gps_coord(exif, Tag::GPSLatitude, Tag::GPSLatitudeRef),
         gps_coord(exif, Tag::GPSLongitude, Tag::GPSLongitudeRef),
-    ) {
+    ) && !(lat == 0.0 && lon == 0.0)
+    {
         info.gps = Some((lat, lon));
     }
 }

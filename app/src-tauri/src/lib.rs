@@ -694,7 +694,7 @@ async fn undo(state: State<'_, AppState>) -> CmdResult<Option<UndoInfo>> {
                 state.path_moved(&m.to, &m.from);
             }
             let n = a.moved.len() + a.copied.len();
-            format!("날짜·장소별 정리 {n}개를 되돌렸습니다")
+            format!("정리한 {n}개를 되돌렸습니다")
         }
         UndoOp::Marks(old) => {
             state.marks.restore(&old);
@@ -1250,12 +1250,43 @@ async fn faces_report(app: AppHandle, folder: String, recursive: bool, extra: Op
         let reqs = scope_images(&state, &Scope::new(folder, extra, Some(recursive))).unwrap_or_default();
         let total = reqs.len();
         let db = state.faces.db();
-        let analyzed = reqs.iter().filter(|r| db.analyzed(r)).count();
-        let paths: Vec<String> = reqs.into_iter().map(|r| r.path).collect();
-        people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), analyzed, total, &face_options(&state))
+        let paths: Vec<String> = reqs.iter().map(|r| r.path.clone()).collect();
+        // 분석한 사진의 복사본·옮긴 것은 여기서 바로 결과를 이어받는다 (사진을 읽지 않음)
+        let analyzed = total - db.not_analyzed(reqs).len();
+        group_faces(&state, &paths, analyzed, total)
     })
     .await
     .map_err(err)
+}
+
+/// 이 사진들의 얼굴을 사람별로 묶는다. 제외한 인물은 report.excluded로 따로 둔다.
+fn group_faces(state: &AppState, paths: &[String], analyzed: usize, total: usize) -> people::Report {
+    let db = state.faces.db();
+    let mut report = people::group(db.faces_of(paths), &db.people(), &db.apart_pairs(), analyzed, total, &face_options(state));
+    people::set_aside(&mut report, &db.excluded_people());
+    report
+}
+
+/// 제외: 묶음마다(주변 사람 한 명씩) 숨은 사람으로 둔다
+#[tauri::command]
+fn faces_exclude(state: State<'_, AppState>, groups: Vec<Vec<i64>>) -> CmdResult<()> {
+    let db = state.faces.db();
+    for g in groups.iter().filter(|g| !g.is_empty()) {
+        db.exclude(g).map_err(err)?;
+    }
+    Ok(())
+}
+
+/// 제외 취소: (얼굴, 그 얼굴이 들어가 있던 숨은 사람)
+#[tauri::command]
+fn faces_unexclude(state: State<'_, AppState>, faces: Vec<(i64, i64)>) -> CmdResult<()> {
+    state.faces.db().unexclude(&faces).map_err(err)
+}
+
+/// 인물별 폴더로 복사하기 전에: 이 이름들 가운데 root 안에 이미 폴더가 있는 것
+#[tauri::command]
+fn faces_existing_folders(root: String, names: Vec<String>) -> Vec<String> {
+    names.into_iter().filter(|n| Path::new(&root).join(organize::clean_segment(n)).is_dir()).collect()
 }
 
 /// 얼굴들에 이름 붙이기: person이 있으면 그 사람으로, 없으면 새 사람. 이름이 있으면 바꾼다.
@@ -1300,8 +1331,12 @@ fn faces_clear(state: State<'_, AppState>) -> CmdResult<()> {
     state.faces.db().clear().map_err(err)
 }
 
-/// 인물별 폴더로: "copy"(인물마다 복사, 여러 사람이 나온 사진은 사람 수만큼) 또는 "main"(주인공 기준 이동, 비슷한 크기로 여럿이면 "단체 사진")
+/// 인물별 폴더로: "copy"(인물마다 복사, 여러 사람이 나온 사진은 사람 수만큼) 또는 "main"(주인공 기준 이동, 비슷한 크기로 여럿이면 "단체 사진").
+/// people_ids가 있으면 그 사람들만. existing은 복사할 때 같은 이름 폴더가 이미 있으면:
+/// "overwrite"(그 폴더에 넣고 같은 이름 파일은 바꿈 — 원래 파일은 휴지통으로, 같은 사진이면 건너뜀),
+/// "rename"("민준 (2)"처럼 새 폴더), 없으면 예전처럼 그 폴더에 넣고 겹치는 파일은 " (2)".
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn faces_organize(
     app: AppHandle,
     folder: String,
@@ -1309,6 +1344,7 @@ async fn faces_organize(
     root: String,
     mode: String,
     people_ids: Vec<i64>,
+    existing: Option<String>,
     extra: Option<Vec<String>>,
 ) -> CmdResult<OrganizeReport> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1317,7 +1353,8 @@ async fn faces_organize(
         let reqs = scope_images(&state, &Scope::new(folder, extra, Some(recursive))).unwrap_or_default();
         let db = state.faces.db();
         let paths: Vec<String> = reqs.into_iter().map(|r| r.path).collect();
-        let report = people::group(db.faces_of(&paths), &db.people(), &db.apart_pairs(), 0, 0, &face_options(&state));
+        // 제외한 인물은 폴더를 만들지 않고, 주인공을 정할 때도 이름 없는 사람처럼 본다
+        let report = group_faces(&state, &paths, 0, 0);
         // 얼굴 → 사람 (자동으로 넣은 것 포함), 사람 → 이름
         let mut person_of: HashMap<i64, i64> = HashMap::new();
         let mut names: HashMap<i64, String> = HashMap::new();
@@ -1359,15 +1396,24 @@ async fn faces_organize(
                 }
             }
         }
+        let copy = mode == "copy";
+        let rename_existing = copy && existing.as_deref() == Some("rename");
+        let replace = copy && existing.as_deref() == Some("overwrite");
         let folders: Vec<organize::ApplyFolder> = by_folder
             .into_iter()
-            .map(|(rel, items)| organize::ApplyFolder {
-                rel,
-                items: items.into_iter().map(|path| organize::ApplyItem { path, companions: Vec::new() }).collect(),
+            .map(|(rel, items)| {
+                // 같은 이름 폴더가 있으면 "민준 (2)"처럼 비어 있는 이름으로
+                let mut rel = organize::clean_segment(&rel);
+                if rename_existing && Path::new(&root).join(&rel).exists() {
+                    rel = (2..).map(|n| format!("{rel} ({n})")).find(|r| !Path::new(&root).join(r).exists()).unwrap_or(rel);
+                }
+                organize::ApplyFolder {
+                    rel,
+                    items: items.into_iter().map(|path| organize::ApplyItem { path, companions: Vec::new() }).collect(),
+                }
             })
             .collect();
-        let copy = mode == "copy";
-        let a = organize::apply(Path::new(&root), &folders, copy, &|_, _| {});
+        let a = organize::apply_with(Path::new(&root), &folders, copy, replace, &|_, _| {});
         for m in &a.moved {
             state.viewer.forget(&m.from);
             state.path_moved(&m.from, &m.to);
@@ -1895,7 +1941,11 @@ pub fn run() {
             // 사진 파일 정보를 읽어야 해서 켜는 시간을 늦추지 않게 따로 돌린다 (한 번 하면 다음부터는 바로 끝남).
             {
                 let db = faces.db().clone();
-                std::thread::Builder::new().name("faces-merge".into()).spawn(move || db.merge_spellings())?;
+                std::thread::Builder::new().name("faces-merge".into()).spawn(move || {
+                    db.merge_spellings();
+                    // 예전 분석 기록에 파일 크기·수정 시각 채우기 (복사본·옮긴 사진을 다시 분석하지 않으려고)
+                    db.fill_file_info();
+                })?;
             }
             {
                 let handle = handle.clone();
@@ -2048,6 +2098,9 @@ pub fn run() {
             faces_apart,
             analysis_estimate,
             faces_delete_person,
+            faces_exclude,
+            faces_unexclude,
+            faces_existing_folders,
             faces_clear,
             faces_organize,
             bg_control,

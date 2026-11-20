@@ -4,7 +4,7 @@
 //!   3) apply: 실제로 옮기거나 복사하고, 한 번에 되돌릴 수 있게 기록을 돌려준다.
 
 use crate::formats::{self, Kind};
-use crate::fsops::{self, Moved};
+use crate::fsops::{self, Moved, Trashed};
 use crate::meta::{self, DateSource, Meta};
 use crate::places::{self, Level};
 use rayon::prelude::*;
@@ -204,7 +204,7 @@ fn period(start: i64, end: i64) -> String {
 }
 
 /// 폴더 이름에 쓸 수 없는 글자를 바꾸고 앞뒤 공백·점을 정리한다 (윈도우 규칙 포함)
-fn clean_segment(s: &str) -> String {
+pub fn clean_segment(s: &str) -> String {
     let s: String = s
         .chars()
         .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c })
@@ -378,9 +378,22 @@ pub struct Applied {
     pub copied: Vec<String>,
     /// 새로 만든 폴더 (되돌릴 때 비어 있으면 지운다)
     pub created: Vec<String>,
-    /// 이미 제자리에 있어 건너뛴 것
+    /// 이미 제자리에 있어(복사는 같은 사진이 이미 있어) 건너뛴 것
     pub unchanged: usize,
     pub failed: Vec<(String, String)>,
+    /// 덮어쓰기로 바꾼 원래 파일 (휴지통에 있다, 되돌릴 때 제자리로)
+    pub replaced: Vec<Trashed>,
+}
+
+/// 복사해 둔 같은 사진인지: 크기가 같고 수정 시각이 2초 안 (FAT 계열 USB는 2초 단위)
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) if x.is_file() && y.is_file() && x.len() == y.len() => match (x.modified(), y.modified()) {
+            (Ok(p), Ok(q)) => p.duration_since(q).or_else(|_| q.duration_since(p)).is_ok_and(|d| d.as_secs() <= 2),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// "사진.jpg" → "사진 (n).jpg"
@@ -400,7 +413,15 @@ fn file_name(p: &str) -> String {
 
 /// 정리 위치(root) 아래에 폴더를 만들고 옮기거나 복사한다. 짝 파일은 같은 이름 번호로 함께 옮긴다.
 pub fn apply(root: &Path, folders: &[ApplyFolder], copy: bool, progress: &dyn Fn(usize, usize)) -> Applied {
+    apply_with(root, folders, copy, false, progress)
+}
+
+/// apply와 같고, replace면 (복사할 때) 같은 이름 파일을 바꾼다: 원래 파일은 휴지통으로 보내고 되돌릴 때 제자리로.
+/// 복사할 때는 replace와 상관없이, 이미 그 폴더에 있는 사진이나 같은 사진(크기·수정 시각이 같은 같은 이름)은 건너뛴다.
+pub fn apply_with(root: &Path, folders: &[ApplyFolder], copy: bool, replace: bool, progress: &dyn Fn(usize, usize)) -> Applied {
     let mut out = Applied::default();
+    // 이번에 만든 파일은 덮어쓰지 않는다 (다른 폴더의 같은 이름 사진이 같은 인물 폴더로 갈 때)
+    let mut written: std::collections::HashSet<PathBuf> = Default::default();
     let total: usize = folders.iter().map(|f| f.items.len()).sum();
     let mut done = 0;
     for f in folders {
@@ -433,16 +454,35 @@ pub fn apply(root: &Path, folders: &[ApplyFolder], copy: bool, progress: &dyn Fn
                 out.failed.push((it.path.clone(), "파일이 없음".into()));
                 continue;
             }
-            if !copy && Path::new(&it.path).parent() == Some(dir.as_path()) {
+            let names: Vec<String> = group.iter().map(|p| file_name(p)).collect();
+            // 이미 그 폴더에 있거나(복사) 같은 사진이 이미 있으면 건너뛴다. 이번 묶음에 든 파일이라 덮어쓰지 않는다.
+            if Path::new(&it.path).parent() == Some(dir.as_path())
+                || (copy && group.iter().zip(&names).all(|(p, nm)| same_file(Path::new(p), &dir.join(nm))))
+            {
                 out.unchanged += 1;
+                written.extend(names.iter().map(|nm| dir.join(nm)));
                 continue;
             }
+            // 덮어쓰기: 짝 파일 없는 한 장만, 이번에 만든 파일이 아닐 때
+            let target = dir.join(&names[0]);
+            if copy && replace && group.len() == 1 && target.is_file() && !written.contains(&target) {
+                match fsops::trash(&target) {
+                    Ok(t) => out.replaced.push(t),
+                    Err(e) => {
+                        out.failed.push((it.path.clone(), format!("원래 파일을 휴지통으로 보내지 못함: {e}")));
+                        continue;
+                    }
+                }
+            }
             // 짝 파일이 모두 같은 번호를 쓰도록: 전부 비어 있는 가장 작은 번호
-            let names: Vec<String> = group.iter().map(|p| file_name(p)).collect();
             let n = (1..).find(|&n| names.iter().all(|nm| !dir.join(with_suffix(nm, n)).exists())).unwrap_or(1);
             for (p, nm) in group.iter().zip(&names) {
-                match fsops::transfer_as(Path::new(p), &dir.join(with_suffix(nm, n)), copy) {
-                    Ok(m) if copy => out.copied.push(m.to),
+                let to = dir.join(with_suffix(nm, n));
+                match fsops::transfer_as(Path::new(p), &to, copy) {
+                    Ok(m) if copy => {
+                        written.insert(to);
+                        out.copied.push(m.to)
+                    }
                     Ok(m) => out.moved.push(m),
                     Err(e) => out.failed.push(((*p).clone(), e.to_string())),
                 }
@@ -456,7 +496,8 @@ pub fn apply(root: &Path, folders: &[ApplyFolder], copy: bool, progress: &dyn Fn
     out
 }
 
-/// 정리를 통째로 되돌린다: 옮긴 것은 제자리로, 복사한 것은 휴지통으로, 만든 폴더는 비었으면 지운다.
+/// 정리를 통째로 되돌린다: 옮긴 것은 제자리로, 복사한 것은 휴지통으로, 덮어쓴 원래 파일은 휴지통에서 제자리로,
+/// 만든 폴더는 비었으면 지운다.
 pub fn undo(a: &Applied) -> anyhow::Result<()> {
     for m in a.moved.iter().rev() {
         fsops::undo_move(m)?;
@@ -464,6 +505,7 @@ pub fn undo(a: &Applied) -> anyhow::Result<()> {
     for p in &a.copied {
         fsops::trash(Path::new(p))?;
     }
+    fsops::restore(&a.replaced)?;
     for d in a.created.iter().rev() {
         let dir = Path::new(d);
         // Finder가 만든 .DS_Store만 남았으면 같이 지운다
@@ -571,6 +613,45 @@ mod tests {
         }
         // 원래 있던 폴더는 남는다
         assert!(dir.join("2024/05/IMG_1.MOV").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_skips_same_photos_and_can_replace() {
+        let dir = std::env::temp_dir().join(format!("isee-organize-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("민준")).unwrap();
+        std::fs::create_dir_all(dir.join("다른")).unwrap();
+        let s = |n: &str| dir.join(n).to_string_lossy().into_owned();
+        std::fs::write(s("a.jpg"), "new-a").unwrap();
+        std::fs::write(s("b.jpg"), "b").unwrap();
+        std::fs::write(s("다른/b.jpg"), "other-b").unwrap();
+        // 인물 폴더에는 예전에 복사한 a.jpg(다른 내용)와, 지난번에 복사한 같은 사진 b.jpg
+        std::fs::write(s("민준/a.jpg"), "old").unwrap();
+        std::fs::copy(s("b.jpg"), s("민준/b.jpg")).unwrap();
+        let items = |v: &[&str]| v.iter().map(|n| ApplyItem { path: s(n), companions: vec![] }).collect::<Vec<_>>();
+        let folders = vec![ApplyFolder { rel: "민준".into(), items: items(&["a.jpg", "b.jpg", "민준/b.jpg", "다른/b.jpg"]) }];
+        // 덮어쓰지 않으면: 같은 사진(b)과 이미 그 폴더에 있는 것은 건너뛰고, 내용이 다른 같은 이름은 " (2)"
+        let a = apply_with(&dir, &folders, true, false, &|_, _| {});
+        assert!(a.failed.is_empty(), "{:?}", a.failed);
+        assert_eq!(a.unchanged, 2);
+        assert_eq!(std::fs::read_to_string(s("민준/a.jpg")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(s("민준/a (2).jpg")).unwrap(), "new-a");
+        assert_eq!(std::fs::read_to_string(s("민준/b (2).jpg")).unwrap(), "other-b");
+        undo(&a).unwrap();
+        assert!(!dir.join("민준/a (2).jpg").exists() && !dir.join("민준/b (2).jpg").exists());
+        // 덮어쓰기: 원래 a.jpg는 휴지통으로 보내고 바꾼다.
+        // 이번 묶음에 든 파일(같은 사진 b.jpg)은 덮어쓰지 않아 다른 폴더의 b.jpg는 " (2)"
+        let a = apply_with(&dir, &folders, true, true, &|_, _| {});
+        assert!(a.failed.is_empty(), "{:?}", a.failed);
+        assert_eq!(std::fs::read_to_string(s("민준/a.jpg")).unwrap(), "new-a");
+        assert_eq!(std::fs::read_to_string(s("민준/b.jpg")).unwrap(), "b");
+        assert_eq!(std::fs::read_to_string(s("민준/b (2).jpg")).unwrap(), "other-b");
+        assert_eq!(a.replaced.len(), 1);
+        // 되돌리면 원래 파일이 제자리로
+        undo(&a).unwrap();
+        assert_eq!(std::fs::read_to_string(s("민준/a.jpg")).unwrap(), "old");
+        assert!(!dir.join("민준/b (2).jpg").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
