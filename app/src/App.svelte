@@ -16,6 +16,7 @@
     type CloudDone,
     type CloudProgress,
     type OutFormat,
+    type PasteProgress,
     type Settings,
     type Stats,
     type Turn,
@@ -174,12 +175,30 @@
     return store.settings.view_mode === "list" ? "사진 목록(목록 보기)" : "사진 목록";
   }
 
+  type EditId = "copy" | "cut" | "paste" | "paste_move";
+  const EDIT_IDS = new Set<string>(["copy", "cut", "paste", "paste_move"]);
+
+  /** 복사·잘라내기·붙여넣기 (메뉴·단축키·우클릭). 글자 칸이면 보통 글자 편집, 아니면 고른 파일을 탐색기처럼. */
+  function onEdit(id: EditId) {
+    if (inTextField() || helpOpen || aboutOpen || store.dialog) {
+      // 맥은 메뉴가 ⌘C·⌘V를 먼저 받으므로 웹뷰에 원래 동작을 돌려준다 (윈도우는 키가 그대로 글자 칸에 간다)
+      if (isMac) api.nativeEdit(id === "paste_move" ? "paste" : id);
+      return;
+    }
+    // 편집기·동영상·인쇄·비교 같은 화면이 덮고 있으면 뒤의 사진 목록을 건드리지 않는다
+    if (store.editor || store.video || store.print) return;
+    if (store.compare || store.similar || store.organize || (store.people && store.viewer < 0)) return;
+    if (id === "copy" || id === "cut") store.copyFiles(id === "cut");
+    else store.pasteFiles(id === "paste_move");
+  }
+
   function onMenu(id: string) {
     // 오류 신고는 어느 화면에서든 연다 (편집기·동영상 포함)
     if (id === "bug_report") {
       api.openBugReport(screenName()).catch((e) => store.showToast(`${e}`, { error: true }));
       return;
     }
+    if (EDIT_IDS.has(id)) return onEdit(id as EditId);
     // 편집기에서는 실행 취소가 편집 단계를 되돌린다
     if (store.editor) {
       if (id === "undo") editorView?.undo();
@@ -287,6 +306,8 @@
 
   // 맥에서는 이 단축키들을 메뉴가 처리하므로 화면에서 또 처리하지 않는다
   const MAC_MENU_KEYS = new Set(["z", "a", "o", "n", "p", "[", "]", "ArrowUp", "=", "-"]);
+  // ⌘C·⌘X·⌘V도 메뉴가 받는다 (한글 입력 중엔 e.key가 자모라 키 위치로 본다)
+  const MAC_MENU_CODES = new Set(["KeyC", "KeyX", "KeyV"]);
 
   function onKey(e: KeyboardEvent) {
     if (helpOpen) {
@@ -333,7 +354,7 @@
       if (editorView?.onKey(e)) e.preventDefault();
       return;
     }
-    if (isMac && e.metaKey && MAC_MENU_KEYS.has(e.key)) return;
+    if (isMac && e.metaKey && (MAC_MENU_KEYS.has(e.key) || MAC_MENU_CODES.has(e.code))) return;
     // 비교 화면이 열려 있으면 그쪽 키가 먼저 (숫자키 = 남길 사진, Delete = 나머지 삭제)
     if (store.compare && !(mod && e.key.toLowerCase() === "z")) {
       if (compareView?.onKey(e)) e.preventDefault();
@@ -353,6 +374,13 @@
       return;
     }
     if (!isMac && e.ctrlKey) {
+      // Ctrl+C 복사 · Ctrl+X 잘라내기 · Ctrl+V 붙여넣기 (탐색기처럼. 한글 입력 중에도 되게 키 위치로)
+      const edit = ({ KeyC: "copy", KeyX: "cut", KeyV: "paste" } as Record<string, EditId>)[e.code];
+      if (edit && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        onEdit(edit);
+        return;
+      }
       const map: Record<string, () => void> = {
         z: () => store.undo(),
         a: () => store.viewer < 0 && store.selectAll(),
@@ -629,6 +657,12 @@
         return api.reveal(store.targets()[0]);
       case "copy_path":
         return navigator.clipboard.writeText(store.targets().join("\n"));
+      case "clip_copy":
+        return store.copyFiles(false);
+      case "clip_cut":
+        return store.copyFiles(true);
+      case "clip_paste":
+        return store.pasteFiles(false);
       case "trash":
         return store.trashTargets();
     }
@@ -698,6 +732,7 @@
           if (!store.similar) store.showToast(`비슷한 사진 분석이 끝났습니다 (${note}). "비슷한 사진"을 누르면 바로 보입니다.`);
         }
       }),
+      listen<PasteProgress>("paste-progress", (e) => store.onPasteProgress(e.payload)),
       listen<[number, number]>("convert-progress", (e) => {
         if (store.progress) store.progress = { ...store.progress, done: e.payload[0], total: e.payload[1] };
       }),
@@ -821,9 +856,16 @@
 {/if}
 
 {#if store.progress}
+  {@const p = store.progress}
   <div class="toast progress" role="status">
-    {store.progress.label} 중 · {store.progress.done} / {store.progress.total}
-    <span class="bar"><span style="width:{(store.progress.done / Math.max(1, store.progress.total)) * 100}%"></span></span>
+    {#if p.bytes}
+      {p.label} 중 · {p.done.toLocaleString()} / {p.total.toLocaleString()}개 · {fmtSize(p.bytes[0])} / {fmtSize(p.bytes[1])}
+      <span class="bar"><span style="width:{(p.bytes[0] / Math.max(1, p.bytes[1])) * 100}%"></span></span>
+    {:else}
+      {p.label} 중 · {p.done} / {p.total}
+      <span class="bar"><span style="width:{(p.done / Math.max(1, p.total)) * 100}%"></span></span>
+    {/if}
+    {#if p.cancel}<button onclick={() => api.pasteCancel()}>멈춤</button>{/if}
   </div>
 {:else if store.toast}
   {#key store.toast.id}

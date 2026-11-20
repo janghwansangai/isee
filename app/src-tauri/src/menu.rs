@@ -18,6 +18,10 @@ const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
     "탐색기에서 보기"
 };
 
+/// 단축키 표시 (우클릭 메뉴 글자)
+const KEY_MOD: &str = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+const CUT_LABEL: &str = if cfg!(target_os = "macos") { "오려두기" } else { "잘라내기" };
+
 const SHELL_INSTALL: &str = if cfg!(target_os = "macos") {
     "Finder 우클릭(빠른 동작)에 iSee 변환 넣기"
 } else {
@@ -108,19 +112,30 @@ pub fn build(app: &AppHandle, s: &Settings) -> tauri::Result<(Menu<Wry>, Checks)
         true,
         &[&open_folder, &add_folders, &new_folder, &sep1, &reveal, &rename, &trash, &sep2, &print, &sep()?, &close],
     )?;
-    let edit = Submenu::with_items(
-        app,
-        "편집",
-        true,
-        &[
-            &MenuItem::with_id(app, "undo", "실행 취소", true, mac_accel("CmdOrCtrl+Z"))?,
-            &sep()?,
-            &PredefinedMenuItem::cut(app, Some("오려두기"))?,
-            &PredefinedMenuItem::copy(app, Some("복사하기"))?,
-            &PredefinedMenuItem::paste(app, Some("붙여넣기"))?,
-            &MenuItem::with_id(app, "select_all", "모두 선택", true, mac_accel("CmdOrCtrl+A"))?,
-        ],
-    )?;
+    // 복사·오려두기·붙여넣기: 고른 파일을 탐색기처럼 다른 폴더로 (글자 칸에서는 보통 글자 편집)
+    // 맥: 메뉴가 ⌘C·⌘X·⌘V를 받아 화면에 알리고, 글자 칸이면 화면이 웹뷰에 원래 동작을 돌려준다 (clip::native_edit).
+    //     Finder처럼 ⌥⌘V는 복사해 둔 파일을 여기로 옮긴다.
+    // 윈도우: 기본 항목이 Ctrl+X·C·V 키를 보내므로 화면(JS)이 키로 받는다.
+    #[cfg(target_os = "macos")]
+    let clip_items: Vec<MenuItem<Wry>> = vec![
+        MenuItem::with_id(app, "cut", "오려두기", true, Some("CmdOrCtrl+X"))?,
+        MenuItem::with_id(app, "copy", "복사하기", true, Some("CmdOrCtrl+C"))?,
+        MenuItem::with_id(app, "paste", "붙여넣기", true, Some("CmdOrCtrl+V"))?,
+        MenuItem::with_id(app, "paste_move", "여기로 옮기기 (복사해 둔 파일)", true, Some("Alt+CmdOrCtrl+V"))?,
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let clip_items: Vec<PredefinedMenuItem<Wry>> = vec![
+        PredefinedMenuItem::cut(app, Some("잘라내기"))?,
+        PredefinedMenuItem::copy(app, Some("복사"))?,
+        PredefinedMenuItem::paste(app, Some("붙여넣기"))?,
+    ];
+    let undo = MenuItem::with_id(app, "undo", "실행 취소", true, mac_accel("CmdOrCtrl+Z"))?;
+    let select_all = MenuItem::with_id(app, "select_all", "모두 선택", true, mac_accel("CmdOrCtrl+A"))?;
+    let edit_sep = sep()?;
+    let mut edit_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&undo, &edit_sep];
+    edit_refs.extend(clip_items.iter().map(|m| m as &dyn tauri::menu::IsMenuItem<Wry>));
+    edit_refs.push(&select_all);
+    let edit = Submenu::with_items(app, "편집", true, &edit_refs)?;
     let go = Submenu::with_items(
         app,
         "이동",
@@ -235,8 +250,8 @@ fn format_id(f: OutFormat) -> String {
 }
 
 /// 사진 우클릭 메뉴 (알씨 방식: 회전·크기·형식·용량·화질을 바로 저장).
-/// images: 고른 것 중 사진 수, total: 전체 수.
-pub fn context_menu(app: &AppHandle, s: &Settings, images: usize, total: usize) -> tauri::Result<Menu<Wry>> {
+/// images: 고른 것 중 사진 수, total: 전체 수, can_paste: 붙여넣을 파일이 있음.
+pub fn context_menu(app: &AppHandle, s: &Settings, images: usize, total: usize, can_paste: bool) -> tauri::Result<Menu<Wry>> {
     let img = images > 0;
     let single = total == 1;
     let item = |id: &str, label: &str, enabled: bool| MenuItem::with_id(app, id, label, enabled, None::<&str>);
@@ -385,6 +400,10 @@ pub fn context_menu(app: &AppHandle, s: &Settings, images: usize, total: usize) 
             &item("ctx:print", &format!("인쇄…{many}"), img)?,
             &item("ctx:batch_rename", "이름 일괄 변경…", total > 1)?,
             &save,
+            &sep()?,
+            &item("ctx:clip_copy", &format!("복사하기   {KEY_MOD}C"), true)?,
+            &item("ctx:clip_cut", &format!("{CUT_LABEL}   {KEY_MOD}X"), true)?,
+            &item("ctx:clip_paste", &format!("이 폴더에 붙여넣기   {KEY_MOD}V"), can_paste)?,
             &sep()?,
             &quick,
             &item("ctx:move_to", "다른 폴더로 이동…", true)?,

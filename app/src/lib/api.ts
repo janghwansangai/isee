@@ -322,6 +322,26 @@ export interface OpResult {
   failed: { path: string; error: string }[];
 }
 
+/** 붙여넣기 결과 */
+export interface PasteResult extends OpResult {
+  /** 옮겼다 (아니면 복사) */
+  moved: boolean;
+  /** 같은 폴더로 옮기려던 것 (그대로 둠) */
+  skipped: number;
+  cancelled: boolean;
+  /** 붙여넣을 파일이 없었음 */
+  empty: boolean;
+  /** Finder·탐색기에서 복사한 파일 */
+  from_os: boolean;
+}
+
+export interface PasteProgress {
+  done: number;
+  total: number;
+  bytes: number;
+  total_bytes: number;
+}
+
 export interface Stats {
   generated: number;
   avg_ms: number;
@@ -393,6 +413,13 @@ export const api = {
   trash: (paths: string[]) => invoke<OpResult>("trash", { paths }),
   transfer: (paths: string[], dest: string, copy: boolean) =>
     invoke<OpResult>("transfer", { paths, dest, copy }),
+  /** ⌘C·⌘X: 클립보드에 담기 (운영체제 클립보드에도 담았으면 true) */
+  clipFiles: (paths: string[], cut: boolean) => invoke<boolean>("clip_files", { paths, cut }),
+  /** ⌘V: dest 폴더에 붙여넣기 (mov: 복사해 둔 것도 옮김, 맥 ⌥⌘V) */
+  pasteFiles: (dest: string, mov: boolean) => invoke<PasteResult>("paste_files", { dest, mov }),
+  pasteCancel: () => invoke("paste_cancel"),
+  /** 글자 칸의 복사·잘라내기·붙여넣기를 웹뷰에 돌려준다 (맥) */
+  nativeEdit: (action: "copy" | "cut" | "paste") => invoke("native_edit", { action }),
   rename: (path: string, name: string) => invoke<string>("rename", { path, name }),
   createFolder: (parent: string, name: string) =>
     invoke<string>("create_folder", { parent, name }),

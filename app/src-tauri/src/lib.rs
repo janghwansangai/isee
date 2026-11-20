@@ -1,4 +1,5 @@
 mod cli;
+mod clip;
 mod menu;
 mod print;
 mod protocol;
@@ -83,6 +84,19 @@ pub struct AppState {
     undo_dir: PathBuf,
     /// 띄운 우클릭 메뉴 (닫힐 때까지 살아 있어야 함)
     ctx_menu: Mutex<Option<tauri::menu::Menu<tauri::Wry>>>,
+    /// ⌘C·⌘X로 담은 파일 (탐색기처럼 다른 폴더에서 ⌘V)
+    clip: Mutex<Option<Clip>>,
+    /// 붙여넣는 중 · 멈춤을 누름
+    pasting: AtomicBool,
+    paste_cancel: AtomicBool,
+}
+
+/// 앱 안 클립보드. 운영체제 클립보드에도 같이 담고, 그 번호(seq)가 그대로면 이것을 쓴다
+/// (잘라내기 표시는 맥 Finder 클립보드에 담을 수 없어서). 번호가 바뀌었으면 다른 앱에서 복사한 것.
+struct Clip {
+    paths: Vec<String>,
+    cut: bool,
+    seq: i64,
 }
 
 impl AppState {
@@ -431,6 +445,178 @@ async fn transfer(
         });
     }
     Ok(OpResult { ok, failed })
+}
+
+// ─────────── 복사·잘라내기·붙여넣기 (파일 탐색기처럼 ⌘C·⌘X·⌘V) ───────────
+
+/// 메인 스레드에서 실행하고 결과를 기다린다 (운영체제 클립보드는 메인 스레드에서 다룬다)
+fn on_main<T: Send + 'static>(app: &AppHandle, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f());
+    })
+    .ok()?;
+    rx.recv().ok()
+}
+
+/// 고른 파일을 클립보드에 담는다 (cut: 잘라내기 → 붙여넣으면 옮김).
+/// 운영체제 클립보드에도 담아 Finder·탐색기에서 붙여넣을 수 있게 한다. 그것이 안 돼도 앱 안에서는 된다.
+/// 돌려주는 값: 운영체제 클립보드에도 담았는지
+#[tauri::command]
+fn clip_files(state: State<'_, AppState>, paths: Vec<String>, cut: bool) -> bool {
+    // 동기 명령이라 메인 스레드에서 돈다
+    let os = clip::write_files(&paths, cut).is_ok();
+    *state.clip.lock() = Some(Clip { paths, cut, seq: clip::seq() });
+    os
+}
+
+#[derive(Serialize)]
+struct PasteResult {
+    /// 붙여넣은 새 경로
+    ok: Vec<String>,
+    failed: Vec<Failure>,
+    /// 옮겼다 (아니면 복사)
+    moved: bool,
+    /// 같은 폴더로 옮기려던 것 (그대로 둠)
+    skipped: usize,
+    /// 도중에 멈춤
+    cancelled: bool,
+    /// 붙여넣을 파일이 없었음
+    empty: bool,
+    /// 다른 앱(Finder·탐색기)에서 복사한 파일
+    from_os: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct PasteProgress {
+    /// 끝난 항목 수 / 전체
+    done: usize,
+    total: usize,
+    bytes: u64,
+    total_bytes: u64,
+}
+
+/// dest 폴더에 붙여넣는다. mov: 복사한 것도 옮긴다 (맥 ⌥⌘V). 잘라낸 것은 늘 옮긴다.
+/// 같은 이름이 있으면 " (2)"를 붙이고 덮어쓰지 않는다. ⌘Z로 되돌릴 수 있다.
+/// 오래 걸리면 "paste-progress" 이벤트로 진행을 알리고, paste_cancel로 멈춘다.
+#[tauri::command]
+async fn paste_files(app: AppHandle, dest: String, mov: bool) -> CmdResult<PasteResult> {
+    let state = app.state::<AppState>();
+    let seq_now = on_main(&app, clip::seq).unwrap_or(i64::MIN);
+    let ours = state
+        .clip
+        .lock()
+        .as_ref()
+        .filter(|c| c.seq == seq_now)
+        .map(|c| (c.paths.clone(), c.cut));
+    // 앱 안에서 담은 것이 그대로면 운영체제 클립보드 내용은 읽지 않는다
+    let os_files = if ours.is_none() { on_main(&app, clip::read_files).flatten() } else { None };
+    let (paths, cut, from_os) = match (ours, os_files) {
+        (Some((p, c)), _) => (p, c, false),
+        (None, Some(f)) => (f.paths, f.cut, true),
+        (None, None) => {
+            return Ok(PasteResult {
+                ok: vec![],
+                failed: vec![],
+                moved: false,
+                skipped: 0,
+                cancelled: false,
+                empty: true,
+                from_os: false,
+            });
+        }
+    };
+    if state.pasting.swap(true, Ordering::SeqCst) {
+        return Err("이미 붙여넣는 중입니다".into());
+    }
+    state.paste_cancel.store(false, Ordering::SeqCst);
+    let mov = mov || cut;
+    let handle = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || run_paste(&handle, paths, &dest, mov, from_os)).await;
+    state.pasting.store(false, Ordering::SeqCst);
+    let r = r.map_err(err)?;
+    // 옮긴 뒤에는 원래 자리에 파일이 없으므로 클립보드를 비운다 (탐색기와 같음)
+    if r.moved && !r.ok.is_empty() {
+        let ours = state.clip.lock().take().map(|c| c.seq);
+        if ours == Some(seq_now) || (from_os && cut) {
+            on_main(&app, move || {
+                if clip::seq() == seq_now {
+                    clip::clear();
+                }
+            });
+        }
+    }
+    Ok(r)
+}
+
+fn run_paste(app: &AppHandle, paths: Vec<String>, dest: &str, mov: bool, from_os: bool) -> PasteResult {
+    let state = app.state::<AppState>();
+    let dest_p = Path::new(dest);
+    // 크기는 정보만 읽어 센다 (클라우드에만 있는 파일도 여기서는 내려받지 않는다)
+    let sizes: Vec<u64> = paths.iter().map(|p| fsops::tree_size(Path::new(p)).1).collect();
+    let total_bytes: u64 = sizes.iter().sum();
+    let total = paths.len();
+    let mut last = Instant::now();
+    let mut emit = |done: usize, bytes: u64, force: bool| {
+        if force || last.elapsed().as_millis() >= 100 {
+            last = Instant::now();
+            let _ = app.emit("paste-progress", PasteProgress { done, total, bytes, total_bytes });
+        }
+    };
+    let mut done_moves = Vec::new();
+    let mut failed = Vec::new();
+    let (mut skipped, mut cancelled, mut base) = (0, false, 0u64);
+    for (i, p) in paths.iter().enumerate() {
+        if state.paste_cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
+        let size = sizes[i];
+        let r = fsops::paste(Path::new(p), dest_p, !mov, &state.paste_cancel, &mut |b| emit(i, base + b.min(size), false));
+        match r {
+            Ok(Some(m)) => {
+                if mov {
+                    state.viewer.forget(&m.from);
+                    state.path_moved(&m.from, &m.to);
+                }
+                done_moves.push(m);
+            }
+            Ok(None) => skipped += 1,
+            Err(e) if e.is::<fsops::Cancelled>() => {
+                cancelled = true;
+                break;
+            }
+            Err(e) => failed.push(Failure { path: p.clone(), error: e.to_string() }),
+        }
+        base += size;
+        emit(i + 1, base, true);
+    }
+    let ok: Vec<String> = done_moves.iter().map(|m| m.to.clone()).collect();
+    if !done_moves.is_empty() {
+        state.undo.lock().push(if mov {
+            UndoOp::Move(done_moves)
+        } else {
+            UndoOp::Copy(ok.clone())
+        });
+    }
+    PasteResult { ok, failed, moved: mov, skipped, cancelled, empty: false, from_os }
+}
+
+#[tauri::command]
+fn paste_cancel(state: State<'_, AppState>) {
+    state.paste_cancel.store(true, Ordering::SeqCst);
+}
+
+/// 글자 칸에서 메뉴의 복사·잘라내기·붙여넣기 (맥: 메뉴가 키를 먼저 받으므로 웹뷰에 원래 동작을 보낸다)
+#[tauri::command]
+fn native_edit(action: String) {
+    // 동기 명령이라 메인 스레드에서 돈다
+    clip::native_edit(&action);
+}
+
+/// 붙여넣을 파일이 있는가 (우클릭 메뉴의 "붙여넣기"를 켤지)
+fn can_paste(state: &AppState) -> bool {
+    state.clip.lock().as_ref().is_some_and(|c| c.seq == clip::seq()) || clip::has_files()
 }
 
 #[tauri::command]
@@ -1255,7 +1441,7 @@ fn context_menu(
     total: usize,
 ) -> CmdResult<()> {
     let s = state.settings.lock().clone();
-    let menu = menu::context_menu(&app, &s, images, total).map_err(err)?;
+    let menu = menu::context_menu(&app, &s, images, total, can_paste(&state)).map_err(err)?;
     window.popup_menu(&menu).map_err(err)?;
     *state.ctx_menu.lock() = Some(menu);
     // OS 메뉴가 닫히면 웹뷰가 포커스를 잃어 다음 클릭 한 번이 무시된다 → 메뉴가 닫힌 뒤 포커스를 돌려준다
@@ -1788,6 +1974,9 @@ pub fn run() {
                 setup_ms: started.elapsed().as_secs_f64() * 1000.0,
                 undo_dir,
                 ctx_menu: Mutex::new(None),
+                clip: Mutex::new(None),
+                pasting: AtomicBool::new(false),
+                paste_cancel: AtomicBool::new(false),
             });
             // 사용자가 꺼 둔 썸네일 미리 만들기
             if !state_prefill {
@@ -1819,6 +2008,10 @@ pub fn run() {
             file_info,
             trash,
             transfer,
+            clip_files,
+            paste_files,
+            paste_cancel,
+            native_edit,
             rename,
             create_folder,
             undo,
