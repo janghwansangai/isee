@@ -17,7 +17,7 @@
 
 ## 다음 할 일 (우선순위순)
 1. 윈도우 업데이트 실패 원인: 사용자에게 0.1.9+ 실패 창 문구와 브라우저로 GitHub 내려받기가 되는지 받기. GitHub 차단이면 윈도우 setup.exe(12.6MB < Workers 25MiB)·latest.json을 Cloudflare 사이트에도 올리고 두 번째 updater endpoint로 추가 (맥 tar.gz 35MB는 한도 초과)
-2. 윈도우 실기 확인 안 된 것: 인쇄(Edge 인쇄 창), 업데이트, 휴지통 되돌리기, 탐색기 우클릭 메뉴
+2. 윈도우 실기 확인 안 된 것: 인쇄(Edge 인쇄 창), 업데이트, 휴지통 되돌리기, 탐색기 우클릭 메뉴, 드라이브 이름(탐색기식 "로컬 디스크 (C:)" — `listing::drive_display_name`)
 3. 사용자에게 제안해 둔 것: 공개 저장소의 GitHub secret scanning·push protection·Dependabot 켜기 (사용자 허락 필요)
 
 ## 수정 지도 (이걸 바꾸려면 → 여기)
